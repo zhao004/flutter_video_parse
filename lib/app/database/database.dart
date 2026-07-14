@@ -14,6 +14,9 @@ part 'database.g.dart';
 class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
 
+  /// 使用指定执行器创建数据库，仅用于内存数据库等隔离测试场景。
+  AppDatabase.forTesting(super.e);
+
   @override
   int get schemaVersion => 3;
 
@@ -100,6 +103,41 @@ class AppDatabase extends _$AppDatabase {
   }
 
   Future<int> deleteAllParseResultCaches() => delete(parseResultCaches).go();
+
+  /// 查询日志和解析缓存的逻辑载荷大小，单位为字节。
+  ///
+  /// 设计取舍：按 SQLite 中实际 UTF-8 字节数统计文本，并计入整数时间字段；
+  /// 不使用数据库文件大小，因为已释放页和表结构页会让“清空”后仍显示旧容量。
+  Future<int> getLocalStorageSizeBytes() async {
+    final row = await customSelect(
+      '''
+      SELECT
+        COALESCE((
+          SELECT SUM(
+            16 +
+            LENGTH(CAST(level AS BLOB)) +
+            LENGTH(CAST(title AS BLOB)) +
+            LENGTH(CAST(description AS BLOB)) +
+            LENGTH(CAST(source AS BLOB)) +
+            LENGTH(CAST(badge AS BLOB))
+          )
+          FROM parse_logs
+        ), 0) +
+        COALESCE((
+          SELECT SUM(
+            16 +
+            LENGTH(CAST(cache_key AS BLOB)) +
+            LENGTH(CAST(input_url AS BLOB)) +
+            LENGTH(CAST(provider_name AS BLOB)) +
+            LENGTH(CAST(result_json AS BLOB))
+          )
+          FROM parse_result_caches
+        ), 0) AS size_bytes
+      ''',
+      readsFrom: {parseLogs, parseResultCaches},
+    ).getSingle();
+    return row.read<int>('size_bytes');
+  }
 }
 
 LazyDatabase _openConnection() {

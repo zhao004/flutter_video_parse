@@ -21,3 +21,20 @@ Dio createAppHttpClientDio({String baseUrl = 'https://example.com/api'}) {
     ),
   )..interceptors.add(LogInterceptor(requestBody: true, responseBody: true));
 }
+
+/// 媒体文件连接超时，避免不可达地址长期占用下载状态。
+const mediaDownloadConnectTimeout = Duration(seconds: 15);
+
+/// 媒体文件分段接收超时；大文件允许较长传输，但不能无限等待。
+const mediaDownloadReceiveTimeout = Duration(minutes: 2);
+
+/// 创建供图片和视频下载复用的 Dio 实例。
+Dio createMediaDownloadDio() {
+  return Dio(
+    BaseOptions(
+      connectTimeout: mediaDownloadConnectTimeout,
+      receiveTimeout: mediaDownloadReceiveTimeout,
+      sendTimeout: mediaDownloadConnectTimeout,
+    ),
+  );
+}

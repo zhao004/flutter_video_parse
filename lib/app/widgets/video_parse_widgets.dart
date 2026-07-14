@@ -20,6 +20,7 @@ class PhonePageShell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final systemBottomInset = MediaQuery.viewPaddingOf(context).bottom;
     return Center(
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: AppTheme.pageWidth),
@@ -30,8 +31,8 @@ class PhonePageShell extends StatelessWidget {
               left: 18,
               right: 18,
               bottom: includeBottomPadding
-                  ? AppTheme.compactBottomNavHeight
-                  : 24,
+                  ? AppTheme.compactBottomNavHeight + systemBottomInset
+                  : 24 + systemBottomInset,
             ),
             child: child,
           ),
@@ -249,10 +250,11 @@ class FloatingBottomTabs extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final systemBottomInset = MediaQuery.viewPaddingOf(context).bottom;
     return Positioned(
       left: 18,
       right: 18,
-      bottom: 14,
+      bottom: 14 + systemBottomInset,
       child: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 354),

@@ -6,7 +6,10 @@ import '../../theme/app_theme.dart';
 import '../../widgets/video_parse_widgets.dart';
 import '../home/home_controller.dart';
 
-/// 图集解析结果页，对应 Pencil 的“图集结果”画板。
+/// 图集解析结果页，使用单一 Sliver 滚动容器按可视区域懒加载图片。
+///
+/// 构建设计：标题放入 [SliverToBoxAdapter]，瀑布流使用
+/// [SliverMasonryGrid]，避免嵌套 `shrinkWrap` 网格一次创建整个图集。
 class GalleryResultView extends GetView<HomeController> {
   const GalleryResultView({super.key});
 
@@ -33,34 +36,39 @@ class GalleryResultView extends GetView<HomeController> {
             );
           }
 
-          return ListView(
-            children: [
-              const SizedBox(height: 18),
-              ResultTitleBar(
-                title: '图集结果',
-                trailing: RoundIconButton(
-                  icon: Icons.download,
-                  semanticLabel: '批量下载',
-                  color: AppTheme.accentPrimary,
-                  backgroundColor: AppTheme.surfaceInfo,
-                  onTap: controller.downloadAllImagesToGallery,
+          return CustomScrollView(
+            key: const Key('gallery-result-scroll-view'),
+            slivers: [
+              SliverToBoxAdapter(
+                child: Column(
+                  children: [
+                    const SizedBox(height: 18),
+                    ResultTitleBar(
+                      title: '图集结果',
+                      trailing: RoundIconButton(
+                        icon: Icons.download,
+                        semanticLabel: '批量下载',
+                        color: AppTheme.accentPrimary,
+                        backgroundColor: AppTheme.surfaceInfo,
+                        onTap: controller.downloadAllImagesToGallery,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
                 ),
               ),
-              const SizedBox(height: 12),
-              Padding(
+              SliverPadding(
                 padding: const EdgeInsets.all(4),
-                child: LayoutBuilder(
+                sliver: SliverLayoutBuilder(
                   builder: (context, constraints) {
                     final crossAxisCount = _resolveCrossAxisCount(
-                      constraints.maxWidth,
+                      constraints.crossAxisExtent,
                     );
-                    return MasonryGridView.count(
+                    return SliverMasonryGrid.count(
                       crossAxisCount: crossAxisCount,
                       mainAxisSpacing: 6,
                       crossAxisSpacing: 6,
-                      itemCount: images.length,
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
+                      childCount: images.length,
                       itemBuilder: (context, index) {
                         return _GalleryImageCard(
                           imageUrl: images[index].url,
@@ -97,6 +105,7 @@ class GalleryResultView extends GetView<HomeController> {
   }
 }
 
+/// 单张图集卡片，以固定高度稳定瀑布流布局，并在右下角提供下载操作。
 class _GalleryImageCard extends StatelessWidget {
   const _GalleryImageCard({
     required this.imageUrl,
@@ -156,6 +165,7 @@ class _GalleryImageCard extends StatelessWidget {
   }
 }
 
+/// 图集卡片内的紧凑下载按钮，提供独立的无障碍语义。
 class _GalleryIconButton extends StatelessWidget {
   const _GalleryIconButton({
     required this.icon,

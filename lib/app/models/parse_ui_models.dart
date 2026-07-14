@@ -209,3 +209,14 @@ class VideoParseOutcome {
     return result.isGallery;
   }
 }
+
+/// 根据解析库归一化后的媒体类型生成成功日志文案。
+///
+/// 边界处理：视频可能携带封面或缩略图，因此必须先看 `isGallery`，不能仅
+/// 根据图片列表是否为空判断，否则日志会与实际结果页类型不一致。
+String buildParseSuccessDescription(ParseResult result) {
+  if (result.isGallery) {
+    return '${result.parserUsed} 命中图集资源，共 ${result.images.length} 张图片';
+  }
+  return '${result.parserUsed} 命中视频资源，共 ${result.videos.length} 个资源';
+}

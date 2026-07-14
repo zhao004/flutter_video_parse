@@ -467,7 +467,7 @@ class _SettingsAboutTab extends GetView<HomeController> {
                   () => _SettingsTile(
                     icon: Icons.delete_sweep_outlined,
                     title: '清空缓存',
-                    subtitle: '清理 SQLite 解析日志和临时状态',
+                    subtitle: '清理 SQLite 解析日志和解析结果缓存',
                     trailingText: controller.cacheSizeLabel,
                     danger: true,
                     onTap: controller.showClearCacheDialog,

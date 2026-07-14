@@ -102,6 +102,11 @@ class ParseResultCacheRepository implements ParseResultCacheStore {
     return _database.deleteAllParseResultCaches();
   }
 
+  /// 返回设置页“清空缓存”操作覆盖的日志与解析缓存总字节数。
+  Future<int> getLocalStorageSizeBytes() {
+    return _database.getLocalStorageSizeBytes();
+  }
+
   ParseResult _parseResultFromJson(Map<String, Object?> json) {
     final videos = _listValue(json['videos'])
         .map(_mapValue)

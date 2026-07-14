@@ -123,10 +123,17 @@ dart run build_runner build --delete-conflicting-outputs
 构建 Android APK：
 
 ```bash
-flutter build apk
+flutter build apk --release
 ```
 
-> 注意：发布 APK 时需要按项目规则完成 V2/V3 签名，并通过 `apksigner verify` 校验后再分发。
+仓库当前不包含 release 密钥或签名配置，正式构建前由交付方自行配置。产物交付前必须执行：
+
+```powershell
+& "$env:ANDROID_HOME\build-tools\<版本>\apksigner.bat" verify --verbose build\app\outputs\flutter-apk\app-release.apk
+```
+
+只有输出同时包含 `Verified using v2 scheme (APK Signature Scheme v2): true` 和
+`Verified using v3 scheme (APK Signature Scheme v3): true` 时才可分发；任一项为 `false` 时应立即停止交付。
 
 ## 核心流程
 
@@ -160,24 +167,27 @@ flutter build apk
 应用在 Android 端声明以下权限：
 
 - `INTERNET`：访问解析源和下载媒体资源。
-- `READ_MEDIA_IMAGES`：Android 13+ 读取/保存图片相关媒体权限。
-- `READ_MEDIA_VIDEO`：Android 13+ 读取/保存视频相关媒体权限。
 - `WRITE_EXTERNAL_STORAGE`：Android 10 及以下保存媒体资源。
 
-媒体保存通过 `gal` 库写入系统相册。权限不足时，应用会通过 Toast 提示用户授权。
+媒体保存通过 `gal` 库写入系统相册。应用不读取用户已有的照片或视频，因此不声明
+`READ_MEDIA_IMAGES` 和 `READ_MEDIA_VIDEO`；权限不足时会通过 Toast 提示用户授权。
 
 ## 测试范围
 
-当前测试重点覆盖 `VideoParseService`：
+当前测试覆盖以下关键路径：
 
 - 空链接输入校验。
 - 视频结果解析成功。
 - 图集结果识别。
 - 视频结果附带图片时仍识别为视频。
 - 重复解析相同链接命中缓存。
+- 缓存读取或写入异常时降级为网络结果。
 - 空媒体结果返回失败状态。
+- 媒体下载超时配置、非法 URL、取消和临时文件清理。
+- SQLite 日志与图集 JSON 的容量统计及清空行为。
+- 大图集 Sliver 懒加载、底部系统安全区和批量下载取消计数。
 
-新增解析规则、缓存策略或结果类型判断时，应优先补充 `test/video_parse_service_test.dart`。
+新增逻辑时应在对应的 `*_test.dart` 中补充回归场景，并保持测试不依赖外部网络、真实相册或本机数据库。
 
 ## 开发约定
 

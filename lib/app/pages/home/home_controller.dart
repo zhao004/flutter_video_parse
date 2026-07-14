@@ -1,18 +1,15 @@
-import 'dart:io';
-
 import 'package:dart_video_parse/dart_video_parse.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:gal/gal.dart';
 import 'package:get/get.dart';
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:photo_view/photo_view_gallery.dart';
 
 import '../../models/parse_ui_models.dart';
 import '../../routes/app_pages.dart';
+import '../../services/media_download_service.dart';
 import '../../services/parse_log_repository.dart';
 import '../../services/parse_result_cache_repository.dart';
 import '../../services/video_parse_service.dart';
@@ -25,13 +22,18 @@ import '../../utils/app_toast.dart';
 class HomeController extends GetxController {
   HomeController({
     VideoParseService? service,
+    MediaDownloadService? mediaDownloadService,
     ParseLogRepository? logRepository,
     ParseResultCacheRepository? cacheRepository,
   }) : _service = service ?? VideoParseService(),
+       _mediaDownloadService = mediaDownloadService ?? MediaDownloadService(),
+       _ownsMediaDownloadService = mediaDownloadService == null,
        _logRepository = logRepository,
        _cacheRepository = cacheRepository;
 
   final VideoParseService _service;
+  final MediaDownloadService _mediaDownloadService;
+  final bool _ownsMediaDownloadService;
   final ParseLogRepository? _logRepository;
   final ParseResultCacheRepository? _cacheRepository;
   final TextEditingController linkController = TextEditingController();
@@ -52,6 +54,7 @@ class HomeController extends GetxController {
   final RxBool downloadingMedia = false.obs;
   final RxBool cancelingGalleryDownload = false.obs;
   final RxBool hasLinkInput = false.obs;
+  final RxInt localStorageSizeBytes = 0.obs;
   final RxDouble downloadProgress = 0.0.obs;
   CancelToken? _activeDownloadCancelToken;
 
@@ -72,6 +75,11 @@ class HomeController extends GetxController {
 
   @override
   void onClose() {
+    _activeDownloadCancelToken?.cancel('页面已关闭');
+    _activeDownloadCancelToken = null;
+    if (_ownsMediaDownloadService) {
+      _mediaDownloadService.close();
+    }
     linkController.removeListener(_syncLinkInputState);
     linkController.dispose();
     super.onClose();
@@ -245,6 +253,7 @@ class HomeController extends GetxController {
         await _logRepository.deleteLogsByIds(targetIds);
       }
       logs.removeWhere(targets.contains);
+      await _refreshLocalStorageSize();
     } catch (_) {
       AppToast.error('删除失败', '解析日志删除失败，请稍后重试');
       return;
@@ -333,7 +342,7 @@ class HomeController extends GetxController {
         createdAt: DateTime.now(),
         level: ParseLogLevel.success,
         title: outcome.fromCache ? '命中解析缓存' : '解析成功',
-        description: _successDescription(outcome.result!),
+        description: buildParseSuccessDescription(outcome.result!),
         source: outcome.result!.parserUsed,
         badge: outcome.fromCache
             ? 'cache'
@@ -450,7 +459,7 @@ class HomeController extends GetxController {
     Get.dialog<void>(
       AlertDialog(
         title: const Text('清空缓存？'),
-        content: const Text('确认后将清空 SQLite 中的解析日志，不会删除已保存的图片或视频文件。'),
+        content: const Text('确认后将清空 SQLite 中的解析日志和解析结果缓存，不会删除已保存的图片或视频文件。'),
         actions: [
           TextButton(onPressed: Get.back, child: const Text('取消')),
           FilledButton(
@@ -459,6 +468,7 @@ class HomeController extends GetxController {
                 await _logRepository?.clearLogs();
                 await _cacheRepository?.clear();
                 logs.clear();
+                localStorageSizeBytes.value = 0;
                 cancelLogSelection();
                 Get.back<void>();
                 AppToast.success('已清空', '解析日志和解析缓存已清空');
@@ -477,14 +487,14 @@ class HomeController extends GetxController {
   Future<void> downloadPrimaryVideoToGallery() async {
     await _downloadNetworkMediaToGallery(
       url: primaryVideoUrl,
-      mediaType: _GalleryMediaType.video,
+      mediaType: MediaFileType.video,
     );
   }
 
   Future<void> downloadImageToGallery(String url, {int? index}) async {
     await _downloadNetworkMediaToGallery(
       url: url,
-      mediaType: _GalleryMediaType.image,
+      mediaType: MediaFileType.image,
       fallbackName: index == null ? 'image' : 'image_${index + 1}',
     );
   }
@@ -536,24 +546,22 @@ class HomeController extends GetxController {
         _activeDownloadCancelToken = cancelToken;
         final saved = await _downloadNetworkMediaToGallery(
           url: urls[index],
-          mediaType: _GalleryMediaType.image,
+          mediaType: MediaFileType.image,
           fallbackName: 'image_${index + 1}',
           showSuccessToast: false,
           showErrorToast: false,
           manageDownloadState: false,
           cancelToken: cancelToken,
         );
-        _activeDownloadCancelToken = null;
-
-        if (cancelingGalleryDownload.value || cancelToken.isCancelled) {
-          canceled = true;
-          break;
-        }
         if (saved) {
           successCount++;
         }
         successCountState.value = successCount;
         completedCount.value = index + 1;
+        if (cancelingGalleryDownload.value || cancelToken.isCancelled) {
+          canceled = true;
+          break;
+        }
       }
     } finally {
       _activeDownloadCancelToken = null;
@@ -763,20 +771,19 @@ class HomeController extends GetxController {
   }
 
   String get cacheSizeLabel {
-    final logsBytes = logs.fold<int>(0, (sum, entry) {
-      return sum +
-          entry.title.length +
-          entry.description.length +
-          entry.source.length +
-          entry.badge.length;
-    });
-    if (logsBytes <= 0) {
+    const bytesPerKilobyte = 1024;
+    const bytesPerMegabyte = bytesPerKilobyte * 1024;
+    final sizeBytes = localStorageSizeBytes.value;
+    if (sizeBytes <= 0) {
       return '0 KB';
     }
-    if (logsBytes < 1024) {
+    if (sizeBytes < bytesPerKilobyte) {
       return '<1 KB';
     }
-    return '${(logsBytes / 1024).toStringAsFixed(1)} KB';
+    if (sizeBytes < bytesPerMegabyte) {
+      return '${(sizeBytes / bytesPerKilobyte).toStringAsFixed(1)} KB';
+    }
+    return '${(sizeBytes / bytesPerMegabyte).toStringAsFixed(1)} MB';
   }
 
   List<MediaResourceViewData> get videoResources {
@@ -818,20 +825,13 @@ class HomeController extends GetxController {
 
   Future<bool> _downloadNetworkMediaToGallery({
     required String url,
-    required _GalleryMediaType mediaType,
+    required MediaFileType mediaType,
     String fallbackName = 'video',
     bool showSuccessToast = true,
     bool showErrorToast = true,
     bool manageDownloadState = true,
     CancelToken? cancelToken,
   }) async {
-    final normalizedUrl = url.trim();
-    if (normalizedUrl.isEmpty || Uri.tryParse(normalizedUrl) == null) {
-      if (showErrorToast) {
-        AppToast.error('下载失败', '资源链接为空或格式无效');
-      }
-      return false;
-    }
     if (manageDownloadState && downloadingMedia.value) {
       if (showErrorToast) {
         AppToast.warning('正在下载', '请等待当前下载任务完成');
@@ -842,101 +842,47 @@ class HomeController extends GetxController {
     if (manageDownloadState) {
       downloadingMedia.value = true;
     }
+    final effectiveCancelToken = cancelToken ?? CancelToken();
+    _activeDownloadCancelToken = effectiveCancelToken;
     downloadProgress.value = 0;
     try {
-      var hasAccess = await Gal.hasAccess();
-      if (!hasAccess) {
-        hasAccess = await Gal.requestAccess();
-      }
-      if (!hasAccess) {
-        if (showErrorToast) {
-          AppToast.warning('权限不足', '请允许访问相册后再保存资源');
-        }
-        return false;
-      }
-
-      final tempDir = await getTemporaryDirectory();
-      final fileName = _safeFileName(normalizedUrl, fallbackName, mediaType);
-      final filePath = _joinPath(tempDir.path, fileName);
-      await Dio().download(
-        normalizedUrl,
-        filePath,
-        cancelToken: cancelToken,
+      final outcome = await _mediaDownloadService.download(
+        url: url,
+        mediaType: mediaType,
+        fallbackName: fallbackName,
+        cancelToken: effectiveCancelToken,
         onReceiveProgress: (received, total) {
           if (total > 0) {
-            downloadProgress.value = received / total;
+            downloadProgress.value = (received / total)
+                .clamp(0.0, 1.0)
+                .toDouble();
           }
         },
       );
 
-      if (mediaType == _GalleryMediaType.video) {
-        await Gal.putVideo(filePath);
-      } else {
-        await Gal.putImage(filePath);
-      }
-      await File(filePath).delete().catchError((_) => File(filePath));
-
-      if (showSuccessToast) {
+      if (outcome.saved && showSuccessToast) {
         AppToast.success('保存成功', '资源已保存到系统相册');
       }
-      return true;
-    } on GalException catch (error) {
-      if (showErrorToast) {
-        AppToast.error('保存失败', error.type.message);
+      if (!outcome.saved && showErrorToast && !outcome.canceled) {
+        if (outcome.failure == MediaDownloadFailure.permissionDenied) {
+          AppToast.warning('权限不足', outcome.message);
+        } else {
+          final title = outcome.failure == MediaDownloadFailure.gallery
+              ? '保存失败'
+              : '下载失败';
+          AppToast.error(title, outcome.message);
+        }
       }
-      return false;
-    } on DioException catch (error) {
-      final message = error.message?.trim().isNotEmpty == true
-          ? error.message!
-          : '网络下载失败';
-      if (showErrorToast) {
-        AppToast.error('下载失败', message);
-      }
-      return false;
-    } catch (error) {
-      if (showErrorToast) {
-        AppToast.error('下载失败', error.toString());
-      }
-      return false;
+      return outcome.saved;
     } finally {
       downloadProgress.value = 0;
+      if (identical(_activeDownloadCancelToken, effectiveCancelToken)) {
+        _activeDownloadCancelToken = null;
+      }
       if (manageDownloadState) {
         downloadingMedia.value = false;
       }
     }
-  }
-
-  String _safeFileName(
-    String url,
-    String fallbackName,
-    _GalleryMediaType mediaType,
-  ) {
-    final uri = Uri.parse(url);
-    final sourceName = uri.pathSegments.isEmpty ? '' : uri.pathSegments.last;
-    final fallbackExtension = mediaType == _GalleryMediaType.video
-        ? '.mp4'
-        : '.jpg';
-    final baseName = sourceName.trim().isEmpty ? fallbackName : sourceName;
-    final withExtension = _extension(baseName).isEmpty
-        ? '$baseName$fallbackExtension'
-        : baseName;
-    return withExtension.replaceAll(RegExp(r'[^\w\-.]+'), '_');
-  }
-
-  String _extension(String fileName) {
-    final dotIndex = fileName.lastIndexOf('.');
-    if (dotIndex <= 0 || dotIndex == fileName.length - 1) {
-      return '';
-    }
-    return fileName.substring(dotIndex);
-  }
-
-  String _joinPath(String directory, String fileName) {
-    final separator = Platform.pathSeparator;
-    if (directory.endsWith(separator)) {
-      return '$directory$fileName';
-    }
-    return '$directory$separator$fileName';
   }
 
   void _loadProviders() {
@@ -958,6 +904,7 @@ class HomeController extends GetxController {
   Future<void> _loadLogs() async {
     final repository = _logRepository;
     if (repository == null) {
+      await _refreshLocalStorageSize();
       return;
     }
 
@@ -967,6 +914,8 @@ class HomeController extends GetxController {
       selectedLogs.removeWhere((item) => !logs.contains(item));
     } catch (_) {
       AppToast.error('日志加载失败', '无法读取本地解析日志');
+    } finally {
+      await _refreshLocalStorageSize();
     }
   }
 
@@ -974,6 +923,7 @@ class HomeController extends GetxController {
     final repository = _logRepository;
     if (repository == null) {
       _insertLog(entry);
+      await _refreshLocalStorageSize();
       return;
     }
 
@@ -983,6 +933,24 @@ class HomeController extends GetxController {
     } catch (_) {
       _insertLog(entry);
       AppToast.error('日志保存失败', '本条解析日志仅暂存在内存中');
+    } finally {
+      await _refreshLocalStorageSize();
+    }
+  }
+
+  /// 刷新设置页展示的 SQLite 逻辑载荷大小。
+  ///
+  /// 异常策略：容量仅用于提示，数据库暂时不可用时保留上次成功值，不影响解析。
+  Future<void> _refreshLocalStorageSize() async {
+    final repository = _cacheRepository;
+    if (repository == null) {
+      return;
+    }
+    try {
+      final sizeBytes = await repository.getLocalStorageSizeBytes();
+      localStorageSizeBytes.value = sizeBytes < 0 ? 0 : sizeBytes;
+    } catch (_) {
+      // 容量展示属于辅助信息，读取失败时不覆盖已有值。
     }
   }
 
@@ -1003,13 +971,4 @@ class HomeController extends GetxController {
     }
     return index;
   }
-
-  String _successDescription(ParseResult result) {
-    if (result.images.isNotEmpty) {
-      return '${result.parserUsed} 命中图集资源，共 ${result.images.length} 张图片';
-    }
-    return '${result.parserUsed} 命中视频资源，共 ${result.videos.length} 个资源';
-  }
 }
-
-enum _GalleryMediaType { image, video }

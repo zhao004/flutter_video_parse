@@ -44,21 +44,27 @@ class VideoParseService {
       );
     }
 
+    ParseResult? cachedResult;
     try {
-      final cachedResult = await _cacheStore?.read(
+      cachedResult = await _cacheStore?.read(
         inputUrl: input,
         provider: provider,
       );
-      if (cachedResult != null) {
-        return VideoParseOutcome(
-          success: true,
-          message: '命中解析缓存',
-          code: ParseCodes.success,
-          result: cachedResult,
-          fromCache: true,
-        );
-      }
+    } catch (_) {
+      // 缓存是可选优化，SQLite 损坏或磁盘异常时按未命中处理，不能阻断解析。
+      cachedResult = null;
+    }
+    if (cachedResult != null) {
+      return VideoParseOutcome(
+        success: true,
+        message: '命中解析缓存',
+        code: ParseCodes.success,
+        result: cachedResult,
+        fromCache: true,
+      );
+    }
 
+    try {
       final response = provider == null
           ? await _parser.parse(input)
           : await _parser.parseByProvider(input, provider);
@@ -80,12 +86,16 @@ class VideoParseService {
         );
       }
 
-      await _cacheStore?.write(
-        inputUrl: input,
-        provider: provider,
-        result: result,
-        ttl: cacheTtl,
-      );
+      try {
+        await _cacheStore?.write(
+          inputUrl: input,
+          provider: provider,
+          result: result,
+          ttl: cacheTtl,
+        );
+      } catch (_) {
+        // 网络结果已经有效，缓存落盘失败时仍应把结果交给用户。
+      }
 
       return VideoParseOutcome(
         success: true,
