@@ -1,8 +1,6 @@
 import 'package:dart_video_parse/dart_video_parse.dart';
 import 'package:flutter/material.dart';
 
-import '../theme/app_theme.dart';
-
 /// 页面解析状态，避免界面直接依赖网络请求细节。
 enum ParseUiStatus { idle, loading, success, error }
 
@@ -67,24 +65,15 @@ class ParseLogEntry {
         '${utc8Time.minute.toString().padLeft(2, '0')}';
   }
 
-  Color get color => switch (level) {
-    ParseLogLevel.success => AppTheme.success,
-    ParseLogLevel.warning => AppTheme.warning,
-    ParseLogLevel.error => AppTheme.danger,
-  };
-
-  Color get softColor => switch (level) {
-    ParseLogLevel.success => AppTheme.successSoft,
-    ParseLogLevel.warning => AppTheme.warningSoft,
-    ParseLogLevel.error => AppTheme.dangerSoft,
-  };
-
   IconData get icon => switch (level) {
     ParseLogLevel.success => Icons.check_circle_outline,
     ParseLogLevel.warning => Icons.rule,
     ParseLogLevel.error => Icons.error_outline,
   };
 }
+
+/// Provider 探测后的视觉状态，由组件映射到当前主题中的业务状态色。
+enum ProviderHealth { available, restricted, unavailable }
 
 /// 结果页中的可操作媒体资源。
 class MediaResourceViewData {
@@ -112,20 +101,18 @@ class ProviderStatusViewData {
     required this.probeUrl,
     required this.statusLabel,
     required this.latencyLabel,
-    required this.color,
-    required this.softColor,
     required this.icon,
     required this.available,
+    required this.health,
   });
 
   final String name;
   final String probeUrl;
   final String statusLabel;
   final String latencyLabel;
-  final Color color;
-  final Color softColor;
   final IconData icon;
   final bool available;
+  final ProviderHealth health;
 
   factory ProviderStatusViewData.fromStatus(ProviderStatus status) {
     if (status.available) {
@@ -134,10 +121,9 @@ class ProviderStatusViewData {
         probeUrl: status.probeUrl,
         statusLabel: '可用',
         latencyLabel: '${status.latencyMs ?? 0}ms',
-        color: AppTheme.success,
-        softColor: AppTheme.successSoft,
         icon: Icons.check_circle_outline,
         available: true,
+        health: ProviderHealth.available,
       );
     }
 
@@ -149,10 +135,9 @@ class ProviderStatusViewData {
         latencyLabel: status.httpStatusCode == null
             ? 'unknown'
             : 'HTTP ${status.httpStatusCode}',
-        color: AppTheme.warning,
-        softColor: AppTheme.warningSoft,
         icon: Icons.warning_amber_rounded,
         available: false,
+        health: ProviderHealth.restricted,
       );
     }
 
@@ -161,10 +146,9 @@ class ProviderStatusViewData {
       probeUrl: status.probeUrl,
       statusLabel: '异常',
       latencyLabel: 'timeout',
-      color: AppTheme.danger,
-      softColor: AppTheme.dangerSoft,
       icon: Icons.error_outline,
       available: false,
+      health: ProviderHealth.unavailable,
     );
   }
 }

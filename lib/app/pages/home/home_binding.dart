@@ -1,6 +1,8 @@
 import 'package:get/get.dart';
 
 import '../../database/database.dart';
+import '../../services/download_task_manager.dart';
+import '../../services/media_cache_service.dart';
 import '../../services/parse_log_repository.dart';
 import '../../services/parse_result_cache_repository.dart';
 import '../../services/video_parse_service.dart';
@@ -19,6 +21,7 @@ class HomeBinding extends Bindings {
       () => ParseResultCacheRepository(Get.find<AppDatabase>()),
       fenix: true,
     );
+    Get.lazyPut<MediaCacheService>(MediaCacheService.new, fenix: true);
     Get.lazyPut<VideoParseService>(
       () =>
           VideoParseService(cacheStore: Get.find<ParseResultCacheRepository>()),
@@ -27,8 +30,9 @@ class HomeBinding extends Bindings {
     Get.lazyPut<HomeController>(
       () => HomeController(
         service: Get.find<VideoParseService>(),
+        downloadTaskManager: Get.find<DownloadTaskManager>(),
         logRepository: Get.find<ParseLogRepository>(),
-        cacheRepository: Get.find<ParseResultCacheRepository>(),
+        mediaCacheStore: Get.find<MediaCacheService>(),
       ),
     );
   }

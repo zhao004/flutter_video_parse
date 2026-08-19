@@ -1,194 +1,207 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
+import '../../models/parse_ui_models.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/video_parse_widgets.dart';
 import 'home_controller.dart';
 
-/// 应用主页面，对应 Pencil 的“解析首页 / 解析源状态 / 设置关于”三张画板。
+/// 应用主页面，按窗口宽度在 NavigationBar 与 NavigationRail 之间切换。
+///
+/// 构建设计：紧凑窗口保留底部三目的地导航；600dp 以上改为侧边 Rail，
+/// 840dp 以上展开标签。日志属于设置下的二级视图，因此进入后隐藏主导航。
 class HomeView extends GetView<HomeController> {
   const HomeView({super.key});
 
+  static const _navigationItems = [
+    _NavigationItem(
+      label: '解析',
+      icon: Icons.link_outlined,
+      selectedIcon: Icons.link,
+    ),
+    _NavigationItem(
+      label: '状态',
+      icon: Icons.monitor_heart_outlined,
+      selectedIcon: Icons.monitor_heart,
+    ),
+    _NavigationItem(
+      label: '设置',
+      icon: Icons.settings_outlined,
+      selectedIcon: Icons.settings,
+    ),
+  ];
+
   @override
   Widget build(BuildContext context) {
-    return Obx(
-      () => PopScope(
-        canPop: !controller.showingLogsPanel.value,
-        onPopInvokedWithResult: (didPop, _) {
-          if (!didPop) {
-            controller.handleLogsBack();
-          }
-        },
-        child: Scaffold(
-          body: Stack(
-            children: [
-              IndexedStack(
-                index: controller.currentTabIndex.value,
-                children: const [
-                  _ParseHomeTab(),
-                  _ProviderStatusTab(),
-                  _SettingsAboutTab(),
-                ],
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < AppTheme.compactBreakpoint;
+        final extendedRail =
+            constraints.maxWidth >= AppTheme.expandedBreakpoint;
+        return Obx(() {
+          final showingLogs = controller.showingLogsPanel.value;
+          final selectedIndex = controller.currentTabIndex.value;
+          final selectingLogs = controller.selectingLogs.value;
+          final content = showingLogs
+              ? _ParseLogsPanel(selecting: selectingLogs)
+              : IndexedStack(
+                  index: selectedIndex,
+                  children: const [
+                    _ParseHomeTab(),
+                    _ProviderStatusTab(),
+                    _SettingsAboutTab(),
+                  ],
+                );
+
+          return PopScope(
+            canPop: !showingLogs,
+            onPopInvokedWithResult: (didPop, _) {
+              if (!didPop) {
+                controller.handleLogsBack();
+              }
+            },
+            child: Scaffold(
+              appBar: AppBar(
+                leading: showingLogs
+                    ? BackButton(onPressed: controller.handleLogsBack)
+                    : null,
+                title: Text(_pageTitle(showingLogs, selectedIndex)),
+                actions: _appBarActions(showingLogs, selectedIndex),
               ),
-              if (controller.showingLogsPanel.value) const _ParseLogsPanel(),
-              if (!controller.showingLogsPanel.value)
-                FloatingBottomTabs(
-                  currentIndex: controller.currentTabIndex.value,
-                  onChanged: controller.switchTab,
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _ParseLogsPanel extends GetView<HomeController> {
-  const _ParseLogsPanel();
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: PhonePageShell(
-        child: Obx(
-          () => ListView(
-            children: [
-              const SizedBox(height: 18),
-              Row(
+              body: Row(
                 children: [
-                  Expanded(
-                    child: ResultTitleBar(
-                      title: controller.selectingLogs.value
-                          ? '已选 ${controller.selectedLogs.length} 条'
-                          : '解析日志',
-                      onBack: controller.handleLogsBack,
+                  if (!compact && !showingLogs) ...[
+                    NavigationRail(
+                      selectedIndex: selectedIndex,
+                      extended: extendedRail,
+                      labelType: extendedRail
+                          ? NavigationRailLabelType.none
+                          : NavigationRailLabelType.all,
+                      onDestinationSelected: controller.switchTab,
+                      destinations: [
+                        for (final item in _navigationItems)
+                          NavigationRailDestination(
+                            icon: Icon(item.icon),
+                            selectedIcon: Icon(item.selectedIcon),
+                            label: Text(item.label),
+                          ),
+                      ],
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  if (controller.selectingLogs.value)
-                    RoundIconButton(
-                      icon:
-                          controller.logs.isNotEmpty &&
-                              controller.selectedLogs.length ==
-                                  controller.logs.length
-                          ? Icons.deselect
-                          : Icons.select_all,
-                      semanticLabel: '全选',
-                      color: AppTheme.accentPrimary,
-                      backgroundColor: AppTheme.surfaceInfo,
-                      onTap: controller.toggleAllLogSelection,
-                    )
-                  else
-                    RoundIconButton(
-                      icon: Icons.checklist,
-                      semanticLabel: '多选',
-                      color: AppTheme.accentPrimary,
-                      backgroundColor: AppTheme.surfaceInfo,
-                      onTap: controller.enterLogSelectionMode,
-                    ),
-                  const SizedBox(width: 8),
-                  RoundIconButton(
-                    icon: controller.selectingLogs.value
-                        ? Icons.delete_outline
-                        : Icons.delete_sweep,
-                    semanticLabel: controller.selectingLogs.value
-                        ? '删除所选'
-                        : '清空',
-                    color: AppTheme.danger,
-                    backgroundColor: AppTheme.dangerSoft,
-                    onTap: controller.selectingLogs.value
-                        ? controller.confirmDeleteSelectedLogs
-                        : controller.showClearCacheDialog,
-                  ),
+                    const VerticalDivider(width: 1),
+                  ],
+                  Expanded(child: content),
                 ],
               ),
-              const SizedBox(height: 12),
-              SoftPanel(
-                padding: const EdgeInsets.all(12),
-                borderColor: AppTheme.surfacePrimary,
-                child: controller.logs.isEmpty
-                    ? const EmptyStatePanel(
-                        title: '暂无解析日志',
-                        description: '执行解析或 Provider 探测后，这里会显示最近记录',
-                        icon: Icons.list_alt,
-                      )
-                    : Column(
-                        children: [
-                          for (final entry in controller.logs) ...[
-                            ParseLogTile(
-                              entry: entry,
-                              selecting: controller.selectingLogs.value,
-                              selected: controller.isLogSelected(entry),
-                              onTap: () {
-                                if (controller.selectingLogs.value) {
-                                  controller.toggleLogSelection(entry);
-                                  return;
-                                }
-                                controller.showLogDetail(entry);
-                              },
-                              onLongPress: () =>
-                                  controller.selectLogEntry(entry),
-                            ),
-                            const SizedBox(height: 8),
-                          ],
-                        ],
-                      ),
-              ),
-            ],
-          ),
-        ),
-      ),
+              bottomNavigationBar: compact && !showingLogs
+                  ? NavigationBar(
+                      selectedIndex: selectedIndex,
+                      onDestinationSelected: controller.switchTab,
+                      destinations: [
+                        for (final item in _navigationItems)
+                          NavigationDestination(
+                            icon: Icon(item.icon),
+                            selectedIcon: Icon(item.selectedIcon),
+                            label: item.label,
+                          ),
+                      ],
+                    )
+                  : null,
+            ),
+          );
+        });
+      },
     );
+  }
+
+  String _pageTitle(bool showingLogs, int selectedIndex) {
+    if (showingLogs) {
+      return controller.selectingLogs.value
+          ? '已选 ${controller.selectedLogs.length} 条'
+          : '解析日志';
+    }
+    return switch (selectedIndex) {
+      1 => '解析源状态',
+      2 => '设置',
+      _ => '视频解析',
+    };
+  }
+
+  List<Widget> _appBarActions(bool showingLogs, int selectedIndex) {
+    if (showingLogs) {
+      if (controller.selectingLogs.value) {
+        final allSelected =
+            controller.logs.isNotEmpty &&
+            controller.selectedLogs.length == controller.logs.length;
+        return [
+          IconButton(
+            tooltip: allSelected ? '取消全选' : '全选',
+            onPressed: controller.toggleAllLogSelection,
+            icon: Icon(allSelected ? Icons.deselect : Icons.select_all),
+          ),
+          IconButton(
+            tooltip: '删除所选',
+            onPressed: controller.confirmDeleteSelectedLogs,
+            icon: const Icon(Icons.delete_outline),
+          ),
+          const SizedBox(width: AppTheme.space4),
+        ];
+      }
+      return [
+        IconButton(
+          key: const Key('log-multi-select-button'),
+          tooltip: '多选',
+          onPressed: controller.enterLogSelectionMode,
+          icon: const Icon(Icons.checklist),
+        ),
+        const SizedBox(width: AppTheme.space4),
+      ];
+    }
+
+    if (selectedIndex == 1) {
+      final probing = controller.probingProviders.value;
+      return [
+        IconButton(
+          tooltip: probing ? '正在探测' : '重新探测',
+          onPressed: probing ? null : controller.refreshProviderStatuses,
+          icon: probing
+              ? const SizedBox.square(
+                  dimension: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.refresh),
+        ),
+        const SizedBox(width: AppTheme.space4),
+      ];
+    }
+    return const [SizedBox(width: AppTheme.space8)];
   }
 }
 
+class _NavigationItem {
+  const _NavigationItem({
+    required this.label,
+    required this.icon,
+    required this.selectedIcon,
+  });
+
+  final String label;
+  final IconData icon;
+  final IconData selectedIcon;
+}
+
+/// 首页解析表单，使用单一 Card 聚合相关输入和操作。
 class _ParseHomeTab extends GetView<HomeController> {
   const _ParseHomeTab();
 
   @override
   Widget build(BuildContext context) {
-    return PhonePageShell(
+    return AdaptivePageShell(
       child: ListView(
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
         children: [
-          const SizedBox(height: 18),
-          const PageTitleBlock(title: '视频解析', subtitle: '粘贴分享链接，自动识别视频或图集结果'),
-          const SizedBox(height: 18),
-          SoftPanel(
-            color: AppTheme.surfaceInfo,
-            radius: 28,
-            padding: const EdgeInsets.all(18),
+          SectionCard(
             child: Column(
               children: [
-                const Row(
-                  children: [
-                    _FlowIcon(),
-                    SizedBox(width: 8),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            '解析流程',
-                            style: TextStyle(
-                              color: AppTheme.foregroundPrimary,
-                              fontSize: 15,
-                              fontWeight: FontWeight.w800,
-                            ),
-                          ),
-                          Text(
-                            '选择解析源后粘贴链接，成功后进入对应结果页',
-                            style: TextStyle(
-                              color: AppTheme.foregroundMuted,
-                              fontSize: 11,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
                 Obx(
                   () => ProviderSelector(
                     providers: controller.providers,
@@ -197,37 +210,62 @@ class _ParseHomeTab extends GetView<HomeController> {
                         controller.selectedProvider.value = value,
                   ),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: AppTheme.space16),
                 TextField(
                   key: const Key('parse_link_input'),
                   controller: controller.linkController,
                   minLines: 3,
                   maxLines: 5,
                   keyboardType: TextInputType.url,
-                  decoration: const InputDecoration(hintText: '请输入短视频链接'),
-                ),
-                const SizedBox(height: 16),
-                Obx(() {
-                  final hasLinkInput = controller.hasLinkInput.value;
-                  return ParseActionButton(
-                    label: hasLinkInput ? '清空编辑框' : '粘贴内容',
-                    icon: hasLinkInput
-                        ? Icons.cleaning_services_outlined
-                        : Icons.content_paste,
-                    primary: false,
-                    onTap: controller.pasteOrClearLinkInput,
-                  );
-                }),
-                const SizedBox(height: 10),
-                Obx(
-                  () => ParseActionButton(
-                    label: controller.parseState.value.isLoading
-                        ? '解析中'
-                        : '立即解析',
-                    icon: Icons.bolt,
-                    loading: controller.parseState.value.isLoading,
-                    onTap: controller.parseCurrentInput,
+                  textInputAction: TextInputAction.done,
+                  autofillHints: const [AutofillHints.url],
+                  decoration: const InputDecoration(
+                    hintText: '请输入短视频链接',
+                    alignLabelWithHint: true,
                   ),
+                ),
+                const SizedBox(height: AppTheme.space16),
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final stackActions = constraints.maxWidth < 480;
+                    final pasteButton = Obx(() {
+                      final hasInput = controller.hasLinkInput.value;
+                      return ParseActionButton(
+                        label: hasInput ? '清空' : '粘贴',
+                        icon: hasInput
+                            ? Icons.clear
+                            : Icons.content_paste_outlined,
+                        primary: false,
+                        onTap: controller.pasteOrClearLinkInput,
+                      );
+                    });
+                    final parseButton = Obx(() {
+                      final loading = controller.parseState.value.isLoading;
+                      return ParseActionButton(
+                        label: loading ? '解析中' : '开始解析',
+                        icon: Icons.auto_awesome,
+                        loading: loading,
+                        onTap: controller.parseCurrentInput,
+                      );
+                    });
+
+                    if (stackActions) {
+                      return Column(
+                        children: [
+                          pasteButton,
+                          const SizedBox(height: AppTheme.space8),
+                          parseButton,
+                        ],
+                      );
+                    }
+                    return Row(
+                      children: [
+                        Expanded(child: pasteButton),
+                        const SizedBox(width: AppTheme.space12),
+                        Expanded(child: parseButton),
+                      ],
+                    );
+                  },
                 ),
               ],
             ),
@@ -238,360 +276,289 @@ class _ParseHomeTab extends GetView<HomeController> {
   }
 }
 
-class _FlowIcon extends StatelessWidget {
-  const _FlowIcon();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 32,
-      height: 32,
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
-        color: AppTheme.surfacePrimary,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppTheme.borderMuted),
-      ),
-      child: const Icon(Icons.bolt, color: AppTheme.accentPrimary, size: 18),
-    );
-  }
-}
-
+/// Provider 状态页，概览卡片和列表均按可用宽度自适应。
 class _ProviderStatusTab extends GetView<HomeController> {
   const _ProviderStatusTab();
 
   @override
   Widget build(BuildContext context) {
-    return PhonePageShell(
+    final colors = Theme.of(context).colorScheme;
+    final statuses = AppTheme.statusColorsOf(context);
+    return AdaptivePageShell(
       child: ListView(
         children: [
-          const SizedBox(height: 18),
-          Row(
-            children: [
-              const Expanded(child: PageTitleBlock(title: '解析源状态')),
-              Obx(
-                () => RoundIconButton(
-                  icon: controller.probingProviders.value
-                      ? Icons.hourglass_top
-                      : Icons.sync,
-                  semanticLabel: '重新探测',
-                  color: AppTheme.accentPrimary,
-                  backgroundColor: AppTheme.surfaceChip,
-                  onTap: controller.refreshProviderStatuses,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
+          const PageTitleBlock(title: '服务概览'),
+          const SizedBox(height: AppTheme.space12),
           Obx(() {
-            final statuses = controller.providerStatuses;
-            final available = statuses.where((item) => item.available).length;
-            final blocked = statuses.where((item) {
-              return !item.available && item.statusLabel == '受限';
-            }).length;
-            final failed = statuses.length - available - blocked;
+            final providerStatuses = controller.providerStatuses;
+            final available = providerStatuses
+                .where((item) => item.health == ProviderHealth.available)
+                .length;
+            final restricted = providerStatuses
+                .where((item) => item.health == ProviderHealth.restricted)
+                .length;
+            final unavailable =
+                providerStatuses.length - available - restricted;
             return Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                StatusOverviewCard(
-                  value: available,
-                  label: '可用解析源',
-                  color: AppTheme.success,
-                  softColor: AppTheme.successSoft,
-                  icon: Icons.check,
+                Expanded(
+                  child: StatusOverviewCard(
+                    value: available,
+                    label: '可用',
+                    color: statuses.success,
+                    softColor: statuses.successContainer,
+                    icon: Icons.check_circle_outline,
+                  ),
                 ),
-                const SizedBox(width: 8),
-                StatusOverviewCard(
-                  value: failed,
-                  label: '异常需关注',
-                  color: AppTheme.danger,
-                  softColor: AppTheme.dangerSoft,
-                  icon: Icons.close,
+                const SizedBox(width: AppTheme.space8),
+                Expanded(
+                  child: StatusOverviewCard(
+                    value: restricted,
+                    label: '受限',
+                    color: statuses.warning,
+                    softColor: statuses.warningContainer,
+                    icon: Icons.warning_amber_rounded,
+                  ),
                 ),
-                const SizedBox(width: 8),
-                StatusOverviewCard(
-                  value: blocked,
-                  label: '受限或限流',
-                  color: AppTheme.warning,
-                  softColor: AppTheme.warningSoft,
-                  icon: Icons.priority_high,
+                const SizedBox(width: AppTheme.space8),
+                Expanded(
+                  child: StatusOverviewCard(
+                    value: unavailable,
+                    label: '异常',
+                    color: colors.error,
+                    softColor: colors.errorContainer,
+                    icon: Icons.error_outline,
+                  ),
                 ),
               ],
             );
           }),
-          const SizedBox(height: 10),
-          SoftPanel(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Provider 状态',
-                            style: TextStyle(
-                              color: AppTheme.foregroundPrimary,
-                              fontSize: 16,
-                              fontWeight: FontWeight.w800,
-                            ),
-                          ),
-                          Text(
-                            '按最近一次探测结果排序',
-                            style: TextStyle(
-                              color: AppTheme.foregroundMuted,
-                              fontSize: 11,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    Obx(
-                      () => Chip(
-                        label: Text('${controller.providers.length} 个源'),
-                        backgroundColor: AppTheme.surfaceInfo,
-                        side: const BorderSide(color: AppTheme.borderMuted),
-                      ),
-                    ),
-                  ],
+          const SizedBox(height: AppTheme.space24),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Provider',
+                  style: Theme.of(context).textTheme.titleLarge,
                 ),
-                const SizedBox(height: 10),
-                Obx(() {
-                  if (controller.providerStatuses.isEmpty) {
-                    return const EmptyStatePanel(
-                      title: '暂无探测数据',
-                      description: '点击右上角按钮重新探测解析源状态',
-                      icon: Icons.query_stats,
-                    );
-                  }
-                  return Column(
-                    children: [
-                      for (final item in controller.providerStatuses) ...[
-                        ProviderStatusTile(data: item),
-                        const SizedBox(height: 6),
-                      ],
-                    ],
-                  );
-                }),
-              ],
-            ),
+              ),
+              Obx(() => Chip(label: Text('${controller.providers.length} 个源'))),
+            ],
           ),
+          const SizedBox(height: AppTheme.space12),
+          Obx(() {
+            if (controller.providerStatuses.isEmpty) {
+              return const EmptyStatePanel(
+                title: '暂无探测数据',
+                description: '当前没有可展示的 Provider 状态',
+                icon: Icons.monitor_heart_outlined,
+              );
+            }
+            return Column(
+              children: [
+                for (
+                  var index = 0;
+                  index < controller.providerStatuses.length;
+                  index++
+                ) ...[
+                  ProviderStatusTile(data: controller.providerStatuses[index]),
+                  if (index < controller.providerStatuses.length - 1)
+                    const SizedBox(height: AppTheme.space8),
+                ],
+              ],
+            );
+          }),
         ],
       ),
     );
   }
 }
 
+/// 设置页使用标准列表分组呈现应用信息和数据操作。
 class _SettingsAboutTab extends GetView<HomeController> {
   const _SettingsAboutTab();
 
+  static const double _maximumSettingsContentWidth = 720;
+
   @override
   Widget build(BuildContext context) {
-    return PhonePageShell(
+    return AdaptivePageShell(
       child: ListView(
+        key: const Key('settings-page'),
         children: [
-          const SizedBox(height: 18),
-          const PageTitleBlock(title: '设置关于', subtitle: '解析日志和本地缓存管理'),
-          const SizedBox(height: 14),
-          SoftPanel(
-            color: AppTheme.surfaceInfo,
-            radius: 28,
-            padding: const EdgeInsets.all(16),
-            child: Row(
-              spacing: 14,
-              children: [
-                Container(
-                  width: 66,
-                  height: 66,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: AppTheme.accentPrimary,
-                    borderRadius: BorderRadius.circular(22),
+          Align(
+            alignment: Alignment.topCenter,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(
+                maxWidth: _maximumSettingsContentWidth,
+              ),
+              child: SizedBox(
+                width: double.infinity,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: AppTheme.space4,
                   ),
-                  child: Image.asset(
-                    'assets/icon/icon.png',
-                    width: 34,
-                    height: 34,
-                  ),
-                ),
-                Expanded(
                   child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Text(
-                        'Video Parse',
-                        style: TextStyle(
-                          color: AppTheme.foregroundPrimary,
-                          fontSize: 18,
-                          fontWeight: FontWeight.w800,
+                      const PageTitleBlock(title: '数据与记录'),
+                      const SizedBox(height: AppTheme.space12),
+                      Obx(
+                        () => _SettingsTile(
+                          key: const Key('settings-logs-action'),
+                          icon: Icons.receipt_long_outlined,
+                          title: '解析日志',
+                          subtitle: '${controller.logs.length} 条记录',
+                          onTap: controller.openLogsPanel,
                         ),
                       ),
-                      SizedBox(height: 8),
-                      Obx(() {
-                        return _VersionCircleBadge(
-                          version: controller.version.value,
-                        );
-                      }),
+                      const SizedBox(height: AppTheme.space8),
+                      Obx(
+                        () => _SettingsTile(
+                          key: const Key('settings-downloads-action'),
+                          icon: Icons.download_for_offline_outlined,
+                          title: '下载管理',
+                          subtitle: controller.downloadTaskSubtitle,
+                          onTap: controller.openDownloadManagement,
+                        ),
+                      ),
+                      const SizedBox(height: AppTheme.space8),
+                      Obx(
+                        () => _SettingsTile(
+                          key: const Key('settings-clear-action'),
+                          icon: Icons.cleaning_services_outlined,
+                          title: '清空缓存',
+                          subtitle: controller.mediaCacheSubtitle,
+                          onTap: controller.showClearMediaCacheDialog,
+                        ),
+                      ),
+                      const SizedBox(height: AppTheme.space24),
+                      const PageTitleBlock(title: '关于'),
+                      const SizedBox(height: AppTheme.space12),
+                      Obx(
+                        () => _SettingsTile(
+                          key: const Key('settings-version-item'),
+                          icon: Icons.info_outline,
+                          title: '应用版本',
+                          subtitle: _versionSubtitle(controller.version.value),
+                          showChevron: false,
+                        ),
+                      ),
                     ],
                   ),
                 ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 14),
-          SoftPanel(
-            padding: const EdgeInsets.all(12),
-            radius: 24,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  '功能导航',
-                  style: TextStyle(
-                    color: AppTheme.foregroundPrimary,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                _SettingsTile(
-                  icon: Icons.list_alt,
-                  title: '解析日志',
-                  subtitle: '查看最近解析、校验和上游错误',
-                  onTap: controller.openLogsPanel,
-                ),
-                const SizedBox(height: 10),
-                Obx(
-                  () => _SettingsTile(
-                    icon: Icons.delete_sweep_outlined,
-                    title: '清空缓存',
-                    subtitle: '清理 SQLite 解析日志和解析结果缓存',
-                    trailingText: controller.cacheSizeLabel,
-                    danger: true,
-                    onTap: controller.showClearCacheDialog,
-                  ),
-                ),
-              ],
+              ),
             ),
           ),
         ],
       ),
     );
   }
+
+  String _versionSubtitle(String version) {
+    final normalizedVersion = version.trim();
+    return normalizedVersion.isEmpty ? '正在读取版本信息' : '当前版本 $normalizedVersion';
+  }
 }
 
-class _VersionCircleBadge extends StatelessWidget {
-  const _VersionCircleBadge({required this.version});
+/// 首页内日志二级视图，列表项支持点击详情和长按进入多选。
+class _ParseLogsPanel extends GetView<HomeController> {
+  const _ParseLogsPanel({required this.selecting});
 
-  final String version;
+  final bool selecting;
 
   @override
   Widget build(BuildContext context) {
-    return Semantics(
-      label: '版本 $version',
-      child: Chip(
-        label: Text("$version v"),
-        shape: RoundedRectangleBorder(
-          side: const BorderSide(color: AppTheme.borderMuted),
-          borderRadius: BorderRadius.circular(23),
-        ),
-        visualDensity: VisualDensity.compact,
-        backgroundColor: AppTheme.surfaceChip,
-        side: const BorderSide(color: AppTheme.borderMuted),
-      ),
+    return AdaptivePageShell(
+      child: Obx(() {
+        if (controller.logs.isEmpty) {
+          return ListView(
+            children: const [
+              EmptyStatePanel(
+                title: '暂无解析日志',
+                description: '完成解析或 Provider 探测后会生成记录',
+                icon: Icons.receipt_long_outlined,
+              ),
+            ],
+          );
+        }
+        return ListView.separated(
+          itemCount: controller.logs.length,
+          separatorBuilder: (_, _) => const SizedBox(height: AppTheme.space8),
+          itemBuilder: (context, index) {
+            final entry = controller.logs[index];
+            return ParseLogTile(
+              entry: entry,
+              selecting: selecting,
+              selected: controller.isLogSelected(entry),
+              onTap: () {
+                if (selecting) {
+                  controller.toggleLogSelection(entry);
+                  return;
+                }
+                controller.showLogDetail(entry);
+              },
+              onLongPress: () => controller.selectLogEntry(entry),
+            );
+          },
+        );
+      }),
     );
   }
 }
 
+/// 参考系统设置页的独立双行设置项，使用 tonal surface 和大圆角分隔操作。
+///
+/// 构建设计：交互项显示末端箭头，纯信息项隐藏箭头；副标题始终保持
+/// 低强调层级，避免与可执行操作名称竞争。
 class _SettingsTile extends StatelessWidget {
   const _SettingsTile({
     required this.icon,
     required this.title,
     required this.subtitle,
-    required this.onTap,
-    this.danger = false,
-    this.trailingText = '',
+    super.key,
+    this.onTap,
+    this.showChevron = true,
   });
+
+  static const double _cornerRadius = 20;
 
   final IconData icon;
   final String title;
   final String subtitle;
-  final VoidCallback onTap;
-  final bool danger;
-  final String trailingText;
+  final VoidCallback? onTap;
+  final bool showChevron;
 
   @override
   Widget build(BuildContext context) {
-    final color = danger ? AppTheme.danger : AppTheme.accentPrimary;
-    final softColor = danger ? AppTheme.dangerSoft : AppTheme.surfaceChip;
-    return InkWell(
-      borderRadius: BorderRadius.circular(18),
-      onTap: onTap,
-      child: Container(
-        height: 64,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        decoration: BoxDecoration(
-          color: AppTheme.surfacePrimary,
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: AppTheme.borderSoft),
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    return Card(
+      color: colors.surfaceContainerLow,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(_cornerRadius),
+      ),
+      child: ListTile(
+        onTap: onTap,
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: AppTheme.space16,
+          vertical: AppTheme.space8,
         ),
-        child: Row(
-          children: [
-            Container(
-              width: 40,
-              height: 40,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: softColor,
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Icon(icon, color: color, size: 22),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: const TextStyle(
-                      color: AppTheme.foregroundPrimary,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  Text(
-                    subtitle,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: AppTheme.foregroundMuted,
-                      fontSize: 11,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            if (trailingText.isNotEmpty) ...[
-              const SizedBox(width: 10),
-              Text(
-                trailingText,
-                style: TextStyle(
-                  color: color,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-            ],
-            const SizedBox(width: 6),
-            const Icon(
-              Icons.keyboard_arrow_right,
-              color: AppTheme.foregroundMuted,
-            ),
-          ],
+        leading: Icon(icon, color: colors.onSurface),
+        title: Text(
+          title,
+          style: theme.textTheme.titleMedium?.copyWith(color: colors.onSurface),
         ),
+        subtitle: Text(
+          subtitle,
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: colors.onSurfaceVariant,
+          ),
+        ),
+        trailing: showChevron
+            ? Icon(Icons.chevron_right, color: colors.onSurfaceVariant)
+            : null,
       ),
     );
   }

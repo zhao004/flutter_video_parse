@@ -47,7 +47,7 @@ class AppToast {
       closeOnClick: true,
       dragToClose: true,
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      borderRadius: BorderRadius.circular(16),
+      borderRadius: BorderRadius.circular(4),
     );
   }
 }

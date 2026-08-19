@@ -23,6 +23,7 @@ android {
         applicationId = "com.zhao.video.parse"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
+        // background_downloader 的原生任务调度最低支持 Android API 21。
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode

@@ -1,5 +1,7 @@
 import 'package:get/get.dart';
 
+import '../pages/downloads/download_management_binding.dart';
+import '../pages/downloads/download_management_view.dart';
 import '../pages/home/home_binding.dart';
 import '../pages/home/home_view.dart';
 import '../pages/result/gallery_result_view.dart';
@@ -21,5 +23,10 @@ class AppPages {
     ),
     GetPage(name: _Paths.videoResult, page: () => const VideoResultView()),
     GetPage(name: _Paths.galleryResult, page: () => const GalleryResultView()),
+    GetPage(
+      name: _Paths.downloadManagement,
+      page: () => const DownloadManagementView(),
+      binding: DownloadManagementBinding(),
+    ),
   ];
 }

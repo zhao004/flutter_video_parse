@@ -1,5 +1,5 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:dart_video_parse/dart_video_parse.dart';
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
@@ -7,11 +7,12 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:photo_view/photo_view_gallery.dart';
 
+import '../../models/download_task_models.dart';
 import '../../models/parse_ui_models.dart';
 import '../../routes/app_pages.dart';
-import '../../services/media_download_service.dart';
+import '../../services/download_task_manager.dart';
+import '../../services/media_cache_service.dart';
 import '../../services/parse_log_repository.dart';
-import '../../services/parse_result_cache_repository.dart';
 import '../../services/video_parse_service.dart';
 import '../../utils/app_toast.dart';
 
@@ -21,21 +22,19 @@ import '../../utils/app_toast.dart';
 /// 这样页面可以保持轻量，也方便单元测试注入假的 [VideoParseService]。
 class HomeController extends GetxController {
   HomeController({
+    required DownloadTaskManager downloadTaskManager,
     VideoParseService? service,
-    MediaDownloadService? mediaDownloadService,
+    MediaCacheStore? mediaCacheStore,
     ParseLogRepository? logRepository,
-    ParseResultCacheRepository? cacheRepository,
   }) : _service = service ?? VideoParseService(),
-       _mediaDownloadService = mediaDownloadService ?? MediaDownloadService(),
-       _ownsMediaDownloadService = mediaDownloadService == null,
-       _logRepository = logRepository,
-       _cacheRepository = cacheRepository;
+       _downloadTaskManager = downloadTaskManager,
+       _mediaCacheStore = mediaCacheStore ?? MediaCacheService(),
+       _logRepository = logRepository;
 
   final VideoParseService _service;
-  final MediaDownloadService _mediaDownloadService;
-  final bool _ownsMediaDownloadService;
+  final DownloadTaskManager _downloadTaskManager;
+  final MediaCacheStore _mediaCacheStore;
   final ParseLogRepository? _logRepository;
-  final ParseResultCacheRepository? _cacheRepository;
   final TextEditingController linkController = TextEditingController();
 
   final RxString version = ''.obs;
@@ -51,12 +50,11 @@ class HomeController extends GetxController {
   final RxBool probingProviders = false.obs;
   final RxBool showingLogsPanel = false.obs;
   final RxBool selectingLogs = false.obs;
-  final RxBool downloadingMedia = false.obs;
-  final RxBool cancelingGalleryDownload = false.obs;
+  final RxBool clearingMediaCache = false.obs;
+  final RxBool loadingMediaCacheSize = false.obs;
+  final Rxn<int> mediaCacheSizeBytes = Rxn<int>();
   final RxBool hasLinkInput = false.obs;
-  final RxInt localStorageSizeBytes = 0.obs;
-  final RxDouble downloadProgress = 0.0.obs;
-  CancelToken? _activeDownloadCancelToken;
+  int _mediaCacheSizeRequestId = 0;
 
   @override
   void onInit() {
@@ -71,15 +69,11 @@ class HomeController extends GetxController {
     _loadProviders();
     refreshProviderStatuses();
     fetchAppVersion();
+    refreshMediaCacheSize();
   }
 
   @override
   void onClose() {
-    _activeDownloadCancelToken?.cancel('页面已关闭');
-    _activeDownloadCancelToken = null;
-    if (_ownsMediaDownloadService) {
-      _mediaDownloadService.close();
-    }
     linkController.removeListener(_syncLinkInputState);
     linkController.dispose();
     super.onClose();
@@ -110,10 +104,16 @@ class HomeController extends GetxController {
   void switchTab(int index) {
     final targetIndex = _normalizeTabIndex(index);
     if (!showingLogsPanel.value && currentTabIndex.value == targetIndex) {
+      if (targetIndex == 2) {
+        refreshMediaCacheSize();
+      }
       return;
     }
     showingLogsPanel.value = false;
     currentTabIndex.value = targetIndex;
+    if (targetIndex == 2) {
+      refreshMediaCacheSize();
+    }
   }
 
   /// 打开解析日志面板，并保持底层 Tab 在“设置关于”。
@@ -134,6 +134,7 @@ class HomeController extends GetxController {
     cancelLogSelection();
     showingLogsPanel.value = false;
     currentTabIndex.value = 2;
+    refreshMediaCacheSize();
     return true;
   }
 
@@ -253,7 +254,6 @@ class HomeController extends GetxController {
         await _logRepository.deleteLogsByIds(targetIds);
       }
       logs.removeWhere(targets.contains);
-      await _refreshLocalStorageSize();
     } catch (_) {
       AppToast.error('删除失败', '解析日志删除失败，请稍后重试');
       return;
@@ -420,251 +420,218 @@ class HomeController extends GetxController {
 
   void showLogDetail(ParseLogEntry entry) {
     Get.dialog<void>(
-      Dialog(
-        insetPadding: const EdgeInsets.symmetric(horizontal: 18),
-        child: Padding(
-          padding: const EdgeInsets.all(18),
+      AlertDialog(
+        title: Text(entry.title),
+        content: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                entry.title,
-                style: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-              const SizedBox(height: 10),
               Text('解析日期：${entry.utc8DateLabel} UTC+8'),
-              const SizedBox(height: 10),
+              const SizedBox(height: 12),
               Text(entry.description),
               if (entry.source.isNotEmpty) ...[
-                const SizedBox(height: 10),
+                const SizedBox(height: 12),
                 Text('来源：${entry.source}'),
               ],
-              const SizedBox(height: 16),
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton(onPressed: Get.back, child: const Text('关闭')),
-              ),
             ],
           ),
         ),
+        actions: [TextButton(onPressed: Get.back, child: const Text('关闭'))],
       ),
     );
   }
 
-  void showClearCacheDialog() {
+  /// 返回设置页可直接展示的缓存状态和容量。
+  String get mediaCacheSubtitle {
+    if (clearingMediaCache.value) {
+      return '正在清空缓存';
+    }
+    final sizeInBytes = mediaCacheSizeBytes.value;
+    if (loadingMediaCacheSize.value && sizeInBytes == null) {
+      return '正在计算缓存';
+    }
+    if (sizeInBytes == null) {
+      return '缓存大小暂不可用';
+    }
+    return '当前缓存 ${formatMediaCacheSize(sizeInBytes)}';
+  }
+
+  /// 重新统计图片磁盘缓存和残留视频临时文件的总大小。
+  Future<void> refreshMediaCacheSize() async {
+    final requestId = ++_mediaCacheSizeRequestId;
+    loadingMediaCacheSize.value = true;
+    try {
+      final sizeInBytes = await _mediaCacheStore.getSizeInBytes();
+      if (requestId == _mediaCacheSizeRequestId) {
+        mediaCacheSizeBytes.value = sizeInBytes;
+      }
+    } catch (_) {
+      if (requestId == _mediaCacheSizeRequestId) {
+        mediaCacheSizeBytes.value = null;
+      }
+    } finally {
+      if (requestId == _mediaCacheSizeRequestId) {
+        loadingMediaCacheSize.value = false;
+      }
+    }
+  }
+
+  /// 显示媒体缓存清理确认，不影响解析日志、解析结果缓存和相册文件。
+  void showClearMediaCacheDialog() {
+    if (clearingMediaCache.value) {
+      AppToast.info('正在清理', '图片和视频缓存正在清理中');
+      return;
+    }
     Get.dialog<void>(
       AlertDialog(
         title: const Text('清空缓存？'),
-        content: const Text('确认后将清空 SQLite 中的解析日志和解析结果缓存，不会删除已保存的图片或视频文件。'),
+        content: const Text(
+          '确认后将清理已缓存的网络图片和视频临时文件。解析日志、解析结果缓存以及已保存到相册的文件不会被删除。',
+        ),
         actions: [
           TextButton(onPressed: Get.back, child: const Text('取消')),
-          FilledButton(
-            onPressed: () async {
-              try {
-                await _logRepository?.clearLogs();
-                await _cacheRepository?.clear();
-                logs.clear();
-                localStorageSizeBytes.value = 0;
-                cancelLogSelection();
-                Get.back<void>();
-                AppToast.success('已清空', '解析日志和解析缓存已清空');
-              } catch (_) {
-                Get.back<void>();
-                AppToast.error('清空失败', '解析日志或解析缓存清空失败，请稍后重试');
-              }
-            },
-            child: const Text('清空'),
-          ),
+          FilledButton(onPressed: _clearMediaCache, child: const Text('清空')),
         ],
       ),
     );
   }
 
+  Future<void> _clearMediaCache() async {
+    if (clearingMediaCache.value) {
+      return;
+    }
+
+    clearingMediaCache.value = true;
+    try {
+      await _mediaCacheStore.clear();
+      _closeDialogIfOpen();
+      AppToast.success('已清空', '图片和视频缓存已清空');
+    } catch (_) {
+      _closeDialogIfOpen();
+      AppToast.error('清空失败', '部分图片或视频缓存未能清理，请稍后重试');
+    } finally {
+      await refreshMediaCacheSize();
+      clearingMediaCache.value = false;
+    }
+  }
+
+  void _closeDialogIfOpen() {
+    if (Get.isDialogOpen == true) {
+      Get.back<void>();
+    }
+  }
+
+  /// 将主视频提交给后台下载器，调用立即返回，不阻塞结果页导航。
   Future<void> downloadPrimaryVideoToGallery() async {
-    await _downloadNetworkMediaToGallery(
-      url: primaryVideoUrl,
-      mediaType: MediaFileType.video,
-    );
-  }
-
-  Future<void> downloadImageToGallery(String url, {int? index}) async {
-    await _downloadNetworkMediaToGallery(
+    final url = primaryVideoUrl;
+    if (url.isEmpty) {
+      AppToast.info('暂无视频', '当前结果没有可下载的视频资源');
+      return;
+    }
+    final result = currentResult.value;
+    final name = result == null || result.title.trim().isEmpty
+        ? '未命名视频'
+        : result.title.trim();
+    final enqueueResult = await _downloadTaskManager.enqueueVideo(
+      name: name,
       url: url,
-      mediaType: MediaFileType.image,
-      fallbackName: index == null ? 'image' : 'image_${index + 1}',
+      showPermissionRationale: _showDownloadPermissionRationale,
     );
+    _showDownloadEnqueueResult(enqueueResult);
   }
 
+  /// 提交单张图片，已在活动任务中的相同 URL 会由管理器去重。
+  Future<void> downloadImageToGallery(String url, {int? index}) async {
+    final result = currentResult.value;
+    final baseName = result == null || result.title.trim().isEmpty
+        ? '图集'
+        : result.title.trim();
+    final imageNumber = index == null ? '' : ' - 图片 ${index + 1}';
+    final enqueueResult = await _downloadTaskManager.enqueueImage(
+      name: '$baseName$imageNumber',
+      url: url,
+      showPermissionRationale: _showDownloadPermissionRationale,
+    );
+    _showDownloadEnqueueResult(enqueueResult);
+  }
+
+  /// 将整组图片作为一个逻辑任务批量提交，管理页只展示聚合进度。
   Future<void> downloadAllImagesToGallery() async {
     final result = currentResult.value;
-    final images = result?.images ?? const <ImageItem>[];
-    final urls = images
+    final urls = (result?.images ?? const <ImageItem>[])
         .map((item) => item.url.trim())
         .where((url) => url.isNotEmpty)
         .toList(growable: false);
-
     if (urls.isEmpty) {
       AppToast.info('暂无图片', '当前结果没有可下载的图集图片');
       return;
     }
-    if (downloadingMedia.value) {
-      AppToast.warning('正在下载', '请等待当前下载任务完成');
-      return;
-    }
-
-    final totalCount = urls.length;
-    final completedCount = 0.obs;
-    final successCountState = 0.obs;
-    final statusMessage = '准备下载图集图片'.obs;
-    var canceled = false;
-    downloadingMedia.value = true;
-    cancelingGalleryDownload.value = false;
-    downloadProgress.value = 0;
-    _showGalleryDownloadProgressDialog(
-      totalCount: totalCount,
-      completedCount: completedCount,
-      successCount: successCountState,
-      statusMessage: statusMessage,
-      onCancel: cancelGalleryDownload,
+    final baseName = result == null || result.title.trim().isEmpty
+        ? '未命名图集'
+        : result.title.trim();
+    final enqueueResult = await _downloadTaskManager.enqueueGallery(
+      name: '$baseName - 全部图片（${urls.length} 张）',
+      urls: urls,
+      showPermissionRationale: _showDownloadPermissionRationale,
     );
-
-    var successCount = 0;
-    try {
-      for (var index = 0; index < urls.length; index++) {
-        if (cancelingGalleryDownload.value) {
-          canceled = true;
-          break;
-        }
-
-        downloadProgress.value = 0;
-        statusMessage.value = '正在下载第 ${index + 1} / $totalCount 张图片';
-        final cancelToken = CancelToken();
-        _activeDownloadCancelToken = cancelToken;
-        final saved = await _downloadNetworkMediaToGallery(
-          url: urls[index],
-          mediaType: MediaFileType.image,
-          fallbackName: 'image_${index + 1}',
-          showSuccessToast: false,
-          showErrorToast: false,
-          manageDownloadState: false,
-          cancelToken: cancelToken,
-        );
-        if (saved) {
-          successCount++;
-        }
-        successCountState.value = successCount;
-        completedCount.value = index + 1;
-        if (cancelingGalleryDownload.value || cancelToken.isCancelled) {
-          canceled = true;
-          break;
-        }
-      }
-    } finally {
-      _activeDownloadCancelToken = null;
-      downloadingMedia.value = false;
-      downloadProgress.value = 0;
-    }
-
-    if (canceled) {
-      statusMessage.value = '已终止下载，成功保存 $successCount / $totalCount 张图片';
-      AppToast.warning('下载已终止', '已保存 $successCount / $totalCount 张图片到相册');
-      return;
-    }
-
-    statusMessage.value = successCount == totalCount
-        ? '全部图片已保存到系统相册'
-        : '部分图片保存失败，请稍后重试';
-    if (successCount > 0) {
-      AppToast.success('保存完成', '已保存 $successCount / $totalCount 张图片到相册');
-      return;
-    }
-    AppToast.error('保存失败', '图集图片保存失败，请检查网络或相册权限');
+    _showDownloadEnqueueResult(enqueueResult);
   }
 
-  /// 终止当前图集批量下载。
-  ///
-  /// 边界处理：如果当前文件正在网络下载，优先取消 Dio 请求；如果处于文件保存
-  /// 阶段，则通过状态位阻止下一张图片继续下载。
-  void cancelGalleryDownload() {
-    if (!downloadingMedia.value || cancelingGalleryDownload.value) {
-      return;
-    }
-    cancelingGalleryDownload.value = true;
-    _activeDownloadCancelToken?.cancel('用户终止图集下载');
+  DownloadJobViewData? get primaryVideoDownloadJob =>
+      _downloadTaskManager.activeJobForUrl(primaryVideoUrl);
+
+  DownloadJobViewData? imageDownloadJob(String url) =>
+      _downloadTaskManager.activeJobForUrl(url);
+
+  DownloadJobViewData? get galleryDownloadJob {
+    final urls =
+        currentResult.value?.images.map((item) => item.url) ?? const <String>[];
+    return _downloadTaskManager.activeGalleryJobForUrls(urls);
   }
 
-  /// 展示批量下载进度弹窗。
-  ///
-  /// 边界处理：下载中允许用户主动终止，但禁止误触返回关闭；任务完成或终止后
-  /// 显示完成按钮，避免用户看不到最终成功数量。
-  void _showGalleryDownloadProgressDialog({
-    required int totalCount,
-    required RxInt completedCount,
-    required RxInt successCount,
-    required RxString statusMessage,
-    required VoidCallback onCancel,
-  }) {
-    Get.dialog<void>(
-      Obx(() {
-        final completed = completedCount.value;
-        final isCanceled = cancelingGalleryDownload.value;
-        final isDone = completed >= totalCount || !downloadingMedia.value;
-        final currentFileProgress = isDone || isCanceled
-            ? 0.0
-            : downloadProgress.value;
-        final overallProgress = totalCount <= 0
-            ? 0.0
-            : ((completed + currentFileProgress) / totalCount).clamp(0.0, 1.0);
+  String get downloadTaskSubtitle => _downloadTaskManager.settingsSubtitle;
 
-        return PopScope(
-          canPop: isDone,
-          child: Dialog(
-            insetPadding: const EdgeInsets.symmetric(horizontal: 28),
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    '下载图集',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
-                  ),
-                  const SizedBox(height: 12),
-                  Text(statusMessage.value),
-                  const SizedBox(height: 14),
-                  LinearProgressIndicator(value: overallProgress),
-                  const SizedBox(height: 10),
-                  Text(
-                    '进度 ${(overallProgress * 100).toStringAsFixed(0)}% · '
-                    '已完成 $completed / $totalCount · '
-                    '成功 ${successCount.value} 张',
-                  ),
-                  const SizedBox(height: 16),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: isDone
-                        ? FilledButton(
-                            onPressed: Get.back<void>,
-                            child: const Text('完成'),
-                          )
-                        : TextButton(
-                            onPressed: onCancel,
-                            child: const Text('终止下载'),
-                          ),
-                  ),
-                ],
-              ),
+  Future<void> openDownloadManagement() async {
+    await Get.toNamed<void>(Routes.downloadManagement);
+  }
+
+  Future<bool> _showDownloadPermissionRationale(
+    DownloadPermissionKind kind,
+  ) async {
+    final isNotification = kind == DownloadPermissionKind.notifications;
+    return await Get.dialog<bool>(
+          AlertDialog(
+            title: Text(isNotification ? '允许下载通知？' : '允许保存到相册？'),
+            content: Text(
+              isNotification
+                  ? '开启通知后可在后台查看进度，并暂停、继续或取消下载。'
+                  : '需要存储权限才能把下载完成的图片或视频保存到系统相册。',
             ),
+            actions: [
+              TextButton(
+                onPressed: () => Get.back(result: false),
+                child: const Text('暂不'),
+              ),
+              FilledButton(
+                onPressed: () => Get.back(result: true),
+                child: const Text('继续'),
+              ),
+            ],
           ),
-        );
-      }),
-      barrierDismissible: false,
-    );
+        ) ??
+        false;
+  }
+
+  void _showDownloadEnqueueResult(DownloadEnqueueResult result) {
+    final skippedMessage = result.skippedCount > 0
+        ? '，已跳过 ${result.skippedCount} 个无效或重复资源'
+        : '';
+    if (result.created) {
+      AppToast.success('已加入下载', '${result.message}$skippedMessage');
+      return;
+    }
+    AppToast.warning('未创建下载', '${result.message}$skippedMessage');
   }
 
   void showImagePreviewDialog(int index) {
@@ -705,7 +672,7 @@ class HomeController extends GetxController {
                 builder: (context, pageIndex) {
                   final imageUrl = images[pageIndex].url.trim();
                   return PhotoViewGalleryPageOptions(
-                    imageProvider: NetworkImage(imageUrl),
+                    imageProvider: CachedNetworkImageProvider(imageUrl),
                     minScale: PhotoViewComputedScale.contained,
                     initialScale: PhotoViewComputedScale.contained,
                     maxScale: PhotoViewComputedScale.covered * 3,
@@ -770,22 +737,6 @@ class HomeController extends GetxController {
     return currentResult.value?.cover.trim() ?? '';
   }
 
-  String get cacheSizeLabel {
-    const bytesPerKilobyte = 1024;
-    const bytesPerMegabyte = bytesPerKilobyte * 1024;
-    final sizeBytes = localStorageSizeBytes.value;
-    if (sizeBytes <= 0) {
-      return '0 KB';
-    }
-    if (sizeBytes < bytesPerKilobyte) {
-      return '<1 KB';
-    }
-    if (sizeBytes < bytesPerMegabyte) {
-      return '${(sizeBytes / bytesPerKilobyte).toStringAsFixed(1)} KB';
-    }
-    return '${(sizeBytes / bytesPerMegabyte).toStringAsFixed(1)} MB';
-  }
-
   List<MediaResourceViewData> get videoResources {
     final result = currentResult.value;
     if (result == null) {
@@ -823,68 +774,6 @@ class HomeController extends GetxController {
     return resources;
   }
 
-  Future<bool> _downloadNetworkMediaToGallery({
-    required String url,
-    required MediaFileType mediaType,
-    String fallbackName = 'video',
-    bool showSuccessToast = true,
-    bool showErrorToast = true,
-    bool manageDownloadState = true,
-    CancelToken? cancelToken,
-  }) async {
-    if (manageDownloadState && downloadingMedia.value) {
-      if (showErrorToast) {
-        AppToast.warning('正在下载', '请等待当前下载任务完成');
-      }
-      return false;
-    }
-
-    if (manageDownloadState) {
-      downloadingMedia.value = true;
-    }
-    final effectiveCancelToken = cancelToken ?? CancelToken();
-    _activeDownloadCancelToken = effectiveCancelToken;
-    downloadProgress.value = 0;
-    try {
-      final outcome = await _mediaDownloadService.download(
-        url: url,
-        mediaType: mediaType,
-        fallbackName: fallbackName,
-        cancelToken: effectiveCancelToken,
-        onReceiveProgress: (received, total) {
-          if (total > 0) {
-            downloadProgress.value = (received / total)
-                .clamp(0.0, 1.0)
-                .toDouble();
-          }
-        },
-      );
-
-      if (outcome.saved && showSuccessToast) {
-        AppToast.success('保存成功', '资源已保存到系统相册');
-      }
-      if (!outcome.saved && showErrorToast && !outcome.canceled) {
-        if (outcome.failure == MediaDownloadFailure.permissionDenied) {
-          AppToast.warning('权限不足', outcome.message);
-        } else {
-          final title = outcome.failure == MediaDownloadFailure.gallery
-              ? '保存失败'
-              : '下载失败';
-          AppToast.error(title, outcome.message);
-        }
-      }
-      return outcome.saved;
-    } finally {
-      downloadProgress.value = 0;
-      if (identical(_activeDownloadCancelToken, effectiveCancelToken)) {
-        _activeDownloadCancelToken = null;
-      }
-      if (manageDownloadState) {
-        downloadingMedia.value = false;
-      }
-    }
-  }
-
   void _loadProviders() {
     final items = _service.listProviders();
     providers.assignAll(items);
@@ -904,7 +793,6 @@ class HomeController extends GetxController {
   Future<void> _loadLogs() async {
     final repository = _logRepository;
     if (repository == null) {
-      await _refreshLocalStorageSize();
       return;
     }
 
@@ -914,8 +802,6 @@ class HomeController extends GetxController {
       selectedLogs.removeWhere((item) => !logs.contains(item));
     } catch (_) {
       AppToast.error('日志加载失败', '无法读取本地解析日志');
-    } finally {
-      await _refreshLocalStorageSize();
     }
   }
 
@@ -923,7 +809,6 @@ class HomeController extends GetxController {
     final repository = _logRepository;
     if (repository == null) {
       _insertLog(entry);
-      await _refreshLocalStorageSize();
       return;
     }
 
@@ -933,24 +818,6 @@ class HomeController extends GetxController {
     } catch (_) {
       _insertLog(entry);
       AppToast.error('日志保存失败', '本条解析日志仅暂存在内存中');
-    } finally {
-      await _refreshLocalStorageSize();
-    }
-  }
-
-  /// 刷新设置页展示的 SQLite 逻辑载荷大小。
-  ///
-  /// 异常策略：容量仅用于提示，数据库暂时不可用时保留上次成功值，不影响解析。
-  Future<void> _refreshLocalStorageSize() async {
-    final repository = _cacheRepository;
-    if (repository == null) {
-      return;
-    }
-    try {
-      final sizeBytes = await repository.getLocalStorageSizeBytes();
-      localStorageSizeBytes.value = sizeBytes < 0 ? 0 : sizeBytes;
-    } catch (_) {
-      // 容量展示属于辅助信息，读取失败时不覆盖已有值。
     }
   }
 

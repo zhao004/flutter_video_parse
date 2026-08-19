@@ -33,6 +33,7 @@ migrate_working_dir/
 pubspec.lock
 /build/
 /coverage/
+/.cache/
 
 # Symbolication related
 app.*.symbols

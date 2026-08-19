@@ -7,6 +7,7 @@ abstract class Routes {
   static const home = _Paths.home;
   static const videoResult = _Paths.videoResult;
   static const galleryResult = _Paths.galleryResult;
+  static const downloadManagement = _Paths.downloadManagement;
 }
 
 abstract class _Paths {
@@ -15,4 +16,5 @@ abstract class _Paths {
   static const home = '/home';
   static const videoResult = '/video-result';
   static const galleryResult = '/gallery-result';
+  static const downloadManagement = '/download-management';
 }

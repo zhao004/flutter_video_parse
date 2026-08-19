@@ -1,3 +1,4 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 import 'package:get/get.dart';
@@ -6,30 +7,54 @@ import '../../theme/app_theme.dart';
 import '../../widgets/video_parse_widgets.dart';
 import '../home/home_controller.dart';
 
-/// 图集解析结果页，使用单一 Sliver 滚动容器按可视区域懒加载图片。
+/// 图集解析结果页，使用标准 AppBar 和单一 Sliver 容器懒加载图片。
 ///
-/// 构建设计：标题放入 [SliverToBoxAdapter]，瀑布流使用
-/// [SliverMasonryGrid]，避免嵌套 `shrinkWrap` 网格一次创建整个图集。
+/// 构建设计：紧凑、中等、扩展窗口分别使用 2、3、4 列；每张图片作为
+/// 独立 Card，下载按钮保持 48dp 触控目标并使用 tonal 强调。
 class GalleryResultView extends GetView<HomeController> {
   const GalleryResultView({super.key});
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: PhonePageShell(
-        includeBottomPadding: false,
+      appBar: AppBar(
+        title: const Text('图集结果'),
+        actions: [
+          Obx(() {
+            final images = controller.currentResult.value?.images ?? const [];
+            final downloadJob = controller.galleryDownloadJob;
+            final downloading = downloadJob != null;
+            return IconButton(
+              tooltip: downloading ? downloadJob.message : '下载全部图片',
+              onPressed: images.isEmpty || downloading
+                  ? null
+                  : controller.downloadAllImagesToGallery,
+              icon: downloading && downloadJob.progress != null
+                  ? const SizedBox.square(
+                      dimension: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : Icon(
+                      downloading
+                          ? Icons.pause_circle_outline
+                          : Icons.download_for_offline_outlined,
+                    ),
+            );
+          }),
+          const SizedBox(width: AppTheme.space4),
+        ],
+      ),
+      body: AdaptivePageShell(
+        topPadding: AppTheme.space8,
         child: Obx(() {
           final result = controller.currentResult.value;
           final images = result?.images ?? const [];
           if (result == null || images.isEmpty) {
             return ListView(
               children: const [
-                SizedBox(height: 18),
-                ResultTitleBar(title: '图集结果'),
-                SizedBox(height: 16),
                 EmptyStatePanel(
                   title: '暂无图集资源',
-                  description: '解析结果没有返回图片直链，或当前结果已经被清空',
+                  description: '当前解析结果没有可用图片',
                   icon: Icons.photo_library_outlined,
                 ),
               ],
@@ -39,51 +64,33 @@ class GalleryResultView extends GetView<HomeController> {
           return CustomScrollView(
             key: const Key('gallery-result-scroll-view'),
             slivers: [
-              SliverToBoxAdapter(
-                child: Column(
-                  children: [
-                    const SizedBox(height: 18),
-                    ResultTitleBar(
-                      title: '图集结果',
-                      trailing: RoundIconButton(
-                        icon: Icons.download,
-                        semanticLabel: '批量下载',
-                        color: AppTheme.accentPrimary,
-                        backgroundColor: AppTheme.surfaceInfo,
-                        onTap: controller.downloadAllImagesToGallery,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                  ],
-                ),
-              ),
-              SliverPadding(
-                padding: const EdgeInsets.all(4),
-                sliver: SliverLayoutBuilder(
-                  builder: (context, constraints) {
-                    final crossAxisCount = _resolveCrossAxisCount(
-                      constraints.crossAxisExtent,
-                    );
-                    return SliverMasonryGrid.count(
-                      crossAxisCount: crossAxisCount,
-                      mainAxisSpacing: 6,
-                      crossAxisSpacing: 6,
-                      childCount: images.length,
-                      itemBuilder: (context, index) {
-                        return _GalleryImageCard(
-                          imageUrl: images[index].url,
+              SliverLayoutBuilder(
+                builder: (context, constraints) {
+                  final crossAxisCount = _resolveCrossAxisCount(
+                    constraints.crossAxisExtent,
+                  );
+                  return SliverMasonryGrid.count(
+                    crossAxisCount: crossAxisCount,
+                    mainAxisSpacing: AppTheme.space12,
+                    crossAxisSpacing: AppTheme.space12,
+                    childCount: images.length,
+                    itemBuilder: (context, index) {
+                      return _GalleryImageCard(
+                        imageUrl: images[index].url,
+                        index: index,
+                        height: _cardHeight(index),
+                        onTap: () => controller.showImagePreviewDialog(index),
+                        onDownload: () => controller.downloadImageToGallery(
+                          images[index].url,
                           index: index,
-                          height: _cardHeight(index),
-                          onTap: () => controller.showImagePreviewDialog(index),
-                          onDownload: () => controller.downloadImageToGallery(
-                            images[index].url,
-                            index: index,
-                          ),
-                        );
-                      },
-                    );
-                  },
-                ),
+                        ),
+                        downloading:
+                            controller.imageDownloadJob(images[index].url) !=
+                            null,
+                      );
+                    },
+                  );
+                },
               ),
             ],
           );
@@ -93,19 +100,22 @@ class GalleryResultView extends GetView<HomeController> {
   }
 
   static double _cardHeight(int index) {
-    const heights = [166.0, 204.0, 214.0, 158.0, 154.0, 194.0];
+    const heights = [176.0, 216.0, 224.0, 168.0, 184.0, 208.0];
     return heights[index % heights.length];
   }
 
   static int _resolveCrossAxisCount(double maxWidth) {
-    if (maxWidth >= 520) {
+    if (maxWidth >= AppTheme.expandedBreakpoint) {
+      return 4;
+    }
+    if (maxWidth >= AppTheme.compactBreakpoint) {
       return 3;
     }
     return 2;
   }
 }
 
-/// 单张图集卡片，以固定高度稳定瀑布流布局，并在右下角提供下载操作。
+/// 单张图片卡片，网络图片失败时保留主题化占位并维持瀑布流尺寸。
 class _GalleryImageCard extends StatelessWidget {
   const _GalleryImageCard({
     required this.imageUrl,
@@ -113,6 +123,7 @@ class _GalleryImageCard extends StatelessWidget {
     required this.height,
     required this.onTap,
     required this.onDownload,
+    required this.downloading,
   });
 
   final String imageUrl;
@@ -120,81 +131,72 @@ class _GalleryImageCard extends StatelessWidget {
   final double height;
   final VoidCallback onTap;
   final VoidCallback onDownload;
+  final bool downloading;
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        height: height,
-        color: _fallbackColor(index),
-        child: Stack(
-          children: [
-            Positioned.fill(
-              child: Image.network(
-                imageUrl,
-                fit: BoxFit.cover,
-                errorBuilder: (_, _, _) => const SizedBox.shrink(),
-              ),
-            ),
-            Positioned(
-              right: 6,
-              bottom: 6,
-              child: _GalleryIconButton(
-                icon: Icons.download,
-                semanticLabel: '下载第 ${index + 1} 张图片',
-                onTap: onDownload,
-              ),
-            ),
-          ],
-        ),
+    final colors = Theme.of(context).colorScheme;
+    final normalizedImageUrl = imageUrl.trim();
+    final fallback = Center(
+      child: Icon(
+        Icons.broken_image_outlined,
+        color: colors.onSurfaceVariant,
+        size: 32,
       ),
     );
-  }
-
-  Color _fallbackColor(int index) {
-    const colors = [
-      Color(0xFFCFE7F1),
-      Color(0xFFDDECCB),
-      Color(0xFFE8DCC4),
-      Color(0xFFF0D1C9),
-      Color(0xFFDCE4E8),
-      Color(0xFFD8E0F5),
-    ];
-    return colors[index % colors.length];
-  }
-}
-
-/// 图集卡片内的紧凑下载按钮，提供独立的无障碍语义。
-class _GalleryIconButton extends StatelessWidget {
-  const _GalleryIconButton({
-    required this.icon,
-    required this.semanticLabel,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final String semanticLabel;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Semantics(
-      button: true,
-      label: semanticLabel,
-      child: Material(
-        color: AppTheme.surfacePrimary.withValues(alpha: 0.92),
-        borderRadius: BorderRadius.circular(16),
+    return Card(
+      color: _fallbackColor(colors, index),
+      child: SizedBox(
+        height: height,
         child: InkWell(
-          borderRadius: BorderRadius.circular(16),
           onTap: onTap,
-          child: SizedBox(
-            width: 32,
-            height: 32,
-            child: Icon(icon, color: AppTheme.accentPrimary, size: 18),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (normalizedImageUrl.isEmpty)
+                fallback
+              else
+                CachedNetworkImage(
+                  imageUrl: normalizedImageUrl,
+                  fit: BoxFit.cover,
+                  placeholder: (_, _) => Center(
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: colors.primary,
+                    ),
+                  ),
+                  errorWidget: (_, _, _) => fallback,
+                ),
+              Positioned(
+                right: AppTheme.space8,
+                bottom: AppTheme.space8,
+                child: IconButton.filledTonal(
+                  tooltip: downloading
+                      ? '第 ${index + 1} 张图片正在下载'
+                      : '下载第 ${index + 1} 张图片',
+                  onPressed: downloading ? null : onDownload,
+                  icon: downloading
+                      ? const SizedBox.square(
+                          dimension: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.download_outlined),
+                ),
+              ),
+            ],
           ),
         ),
       ),
     );
+  }
+
+  Color _fallbackColor(ColorScheme colors, int index) {
+    final candidates = [
+      colors.primaryContainer,
+      colors.secondaryContainer,
+      colors.tertiaryContainer,
+      colors.surfaceContainerHighest,
+    ];
+    return candidates[index % candidates.length];
   }
 }

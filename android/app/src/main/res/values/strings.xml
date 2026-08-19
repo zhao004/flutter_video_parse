@@ -1,0 +1,7 @@
+<resources>
+    <string name="bg_downloader_cancel">取消</string>
+    <string name="bg_downloader_pause">暂停</string>
+    <string name="bg_downloader_resume">继续</string>
+    <string name="bg_downloader_notification_channel_name">媒体下载</string>
+    <string name="bg_downloader_notification_channel_description">显示视频和图片下载进度</string>
+</resources>

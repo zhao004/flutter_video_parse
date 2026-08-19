@@ -3,9 +3,17 @@ import 'package:get/get.dart';
 import 'package:toastification/toastification.dart';
 
 import 'app/routes/app_pages.dart';
+import 'app/services/background_downloader_gateway.dart';
+import 'app/services/download_task_manager.dart';
 import 'app/theme/app_theme.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final downloadTaskManager = DownloadTaskManager(
+    gateway: BackgroundDownloaderPluginGateway(),
+  );
+  await downloadTaskManager.initialize();
+  Get.put<DownloadTaskManager>(downloadTaskManager, permanent: true);
   runApp(const VideoParseApp());
 }
 
@@ -20,6 +28,8 @@ class VideoParseApp extends StatelessWidget {
         title: 'VideoParse',
         debugShowCheckedModeBanner: false,
         theme: AppTheme.light(),
+        darkTheme: AppTheme.dark(),
+        themeMode: ThemeMode.system,
         initialRoute: AppPages.initial,
         getPages: AppPages.routes,
       ),
