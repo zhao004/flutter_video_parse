@@ -124,7 +124,14 @@ dart run build_runner build --delete-conflicting-outputs
 flutter build apk --release
 ```
 
-仓库当前不包含 release 密钥或签名配置，正式构建前由交付方自行配置。产物交付前必须执行：
+本地 Release 构建需要提供以下环境变量；GitHub Actions 使用同名 GitHub Environment secrets：
+
+- `ANDROID_KEYSTORE_PATH`：JKS 文件路径。
+- `ANDROID_KEYSTORE_PASSWORD`：keystore 密码。
+- `ANDROID_KEY_ALIAS`：签名别名。
+- `ANDROID_KEY_PASSWORD`：签名密码。
+
+正式构建前必须完成签名配置。产物交付前必须执行：
 
 ```powershell
 & "$env:ANDROID_HOME\build-tools\<版本>\apksigner.bat" verify --verbose build\app\outputs\flutter-apk\app-release.apk
@@ -132,6 +139,17 @@ flutter build apk --release
 
 只有输出同时包含 `Verified using v2 scheme (APK Signature Scheme v2): true` 和
 `Verified using v3 scheme (APK Signature Scheme v3): true` 时才可分发；任一项为 `false` 时应立即停止交付。
+
+### GitHub Actions Android 发布
+
+`.github/workflows/android-release.yml` 会在推送符合 `vX.Y.Z` 的 Git tag 时，或通过手动运行并输入既有 tag 时，执行格式检查、静态分析、测试和 Android Release 构建，并发布 APK、AAB 及 SHA-256 校验文件。
+
+请在 GitHub Environment `flutter_android_build` 中配置以下 secrets：
+
+- `ANDROID_KEYSTORE_BASE64`：JKS 文件的 Base64 内容。
+- `ANDROID_KEYSTORE_PASSWORD`：keystore 密码。
+- `ANDROID_KEY_ALIAS`：签名别名。
+- `ANDROID_KEY_PASSWORD`：签名密码。
 
 ## 核心流程
 

@@ -1,0 +1,173 @@
+name: Android release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的既有 Git tag，例如 v1.0.0'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release-${{ github.event.inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish Android release
+    runs-on: ubuntu-latest
+    environment: flutter_android_build
+    steps:
+      - name: Resolve release metadata
+        id: metadata
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == 'workflow_dispatch' ]]; then
+            release_tag="$INPUT_TAG"
+          else
+            release_tag="$REF_NAME"
+          fi
+
+          if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo '发布标签必须符合 vX.Y.Z 格式，可附加预发布或构建标识。' >&2
+            exit 1
+          fi
+
+          printf 'tag=%s\n' "$release_tag" >> "$GITHUB_OUTPUT"
+          printf 'version_name=%s\n' "${release_tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release tag
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.metadata.outputs.tag }}
+          persist-credentials: false
+
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.44.9
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Check formatting
+        run: dart format --output=none --set-exit-if-changed lib test
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test
+
+      - name: Restore Android signing keystore
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          : "${ANDROID_KEYSTORE_BASE64:?未配置 ANDROID_KEYSTORE_BASE64}"
+
+          keystore_path="$RUNNER_TEMP/android-release.jks"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore_path"
+          test -s "$keystore_path"
+          chmod 600 "$keystore_path"
+          printf 'ANDROID_KEYSTORE_PATH=%s\n' "$keystore_path" >> "$GITHUB_ENV"
+
+      - name: Validate Android signing configuration
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${ANDROID_KEYSTORE_PATH:?未还原 Android keystore}"
+          : "${ANDROID_KEYSTORE_PASSWORD:?未配置 ANDROID_KEYSTORE_PASSWORD}"
+          : "${ANDROID_KEY_ALIAS:?未配置 ANDROID_KEY_ALIAS}"
+          : "${ANDROID_KEY_PASSWORD:?未配置 ANDROID_KEY_PASSWORD}"
+
+      - name: Build signed APK and AAB
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          RELEASE_VERSION_NAME: ${{ steps.metadata.outputs.version_name }}
+        run: |
+          set -euo pipefail
+          flutter build apk --release \
+            --build-name "$RELEASE_VERSION_NAME" \
+            --build-number "$GITHUB_RUN_NUMBER"
+          flutter build appbundle --release \
+            --build-name "$RELEASE_VERSION_NAME" \
+            --build-number "$GITHUB_RUN_NUMBER"
+
+      - name: Prepare release assets
+        id: assets
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          asset_directory="$RUNNER_TEMP/android-release-$RELEASE_TAG"
+          mkdir -p "$asset_directory"
+          cp build/app/outputs/flutter-apk/app-release.apk \
+            "$asset_directory/flutter_video_parse-$RELEASE_TAG.apk"
+          cp build/app/outputs/bundle/release/app-release.aab \
+            "$asset_directory/flutter_video_parse-$RELEASE_TAG.aab"
+          (
+            cd "$asset_directory"
+            sha256sum *.apk *.aab > SHA256SUMS.txt
+          )
+          printf 'directory=%s\n' "$asset_directory" >> "$GITHUB_OUTPUT"
+
+      - name: Remove temporary keystore
+        if: ${{ always() }}
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/android-release.jks"
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: android-release-${{ steps.metadata.outputs.tag }}
+          path: ${{ steps.assets.outputs.directory }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.metadata.outputs.tag }}
+          ASSET_DIRECTORY: ${{ steps.assets.outputs.directory }}
+        run: |
+          set -euo pipefail
+          release_assets=("$ASSET_DIRECTORY"/*)
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${release_assets[@]}" --clobber
+          else
+            gh release create "$RELEASE_TAG" "${release_assets[@]}" \
+              --title "$RELEASE_TAG" \
+              --generate-notes
+          fi
