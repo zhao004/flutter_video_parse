@@ -1,10 +1,11 @@
 # VideoParse
 
-`VideoParse` 是一个基于 Flutter 的短视频/图集解析应用。应用支持粘贴短视频分享链接、选择解析源、查看解析源状态，并根据解析结果自动进入视频结果页或图集结果页。解析日志和解析缓存通过 Drift + SQLite 本地持久化。
+`VideoParse` 是一个基于 Flutter 的短视频/图集解析应用。应用支持粘贴短视频分享链接、选择解析源、查看解析源状态，并根据解析结果自动进入视频结果页或图集结果页。解析日志和解析缓存通过
+Drift + SQLite 本地持久化。
 
 ## 功能特性
 
-- 视频/图集解析：接入本地 `dart_video_parse` 解析库，支持自动轮询解析源或手动选择指定解析源。
+- 视频/图集解析：接入远程 GitHub `dart_video_parse` 解析库，支持自动轮询解析源或手动选择指定解析源。
 - 结果自动分流：解析成功后根据 `ParseResult` 媒体类型跳转到视频结果页或图集结果页。
 - 视频结果页：使用 `chewie` + `video_player` 预览视频，支持复制视频直链、复制封面直链、下载视频到系统相册。
 - 图集结果页：使用 `flutter_staggered_grid_view` 展示瀑布流，使用 `photo_view` 支持图片预览、缩放和左右滑动切换。
@@ -17,19 +18,19 @@
 
 ## 技术栈
 
-| 能力 | 依赖/方案 |
-| --- | --- |
-| 状态管理与路由 | GetX |
-| 界面设计 | Flutter Material 3 + 响应式窗口布局 |
-| 视频解析 | `dart_video_parse` 本地路径依赖 |
-| 本地数据库 | Drift + SQLite |
-| 网络请求 | Dio + Retrofit |
-| 视频播放 | chewie + video_player |
-| 后台下载与相册保存 | background_downloader |
-| 图集瀑布流 | flutter_staggered_grid_view |
-| 图片预览 | photo_view |
-| Toast 提示 | toastification |
-| 代码生成 | build_runner、drift_dev、json_serializable、retrofit_generator |
+| 能力        | 依赖/方案                                                       |
+|-----------|-------------------------------------------------------------|
+| 状态管理与路由   | GetX                                                        |
+| 界面设计      | Flutter Material 3 + 响应式窗口布局                                |
+| 视频解析      | `dart_video_parse` GitHub 依赖                                |
+| 本地数据库     | Drift + SQLite                                              |
+| 网络请求      | Dio + Retrofit                                              |
+| 视频播放      | chewie + video_player                                       |
+| 后台下载与相册保存 | background_downloader                                       |
+| 图集瀑布流     | flutter_staggered_grid_view                                 |
+| 图片预览      | photo_view                                                  |
+| Toast 提示  | toastification                                              |
+| 代码生成      | build_runner、drift_dev、json_serializable、retrofit_generator |
 
 ## 项目结构
 
@@ -61,18 +62,12 @@ android/                            # Android 平台配置、权限和 Gradle �
 ## 运行前准备
 
 1. 安装 Flutter SDK，并确保本机 Dart SDK 满足 `pubspec.yaml` 中的 `sdk: ^3.11.0`。
-2. 确保本项目同级目录存在本地解析库：
-
-   ```text
-   E:\IDEProjects\dart_video_parse
-   E:\IDEProjects\flutter_video_parse
-   ```
-
-   `pubspec.yaml` 中通过以下方式引用解析库：
+2. 确保网络可以访问 GitHub。`pubspec.yaml` 通过以下方式引用解析库：
 
    ```yaml
    dart_video_parse:
-     path: ../dart_video_parse
+     git:
+       url: https://github.com/zhao004/dart_video_parse.git
    ```
 
 3. 连接 Android 设备或启动模拟器。下载到相册功能依赖 Android 相册权限。
@@ -218,7 +213,7 @@ flutter build apk --release
 
 ### `flutter pub get` 找不到 `dart_video_parse`
 
-确认本项目和 `dart_video_parse` 位于同级目录，并且 `../dart_video_parse` 可以从项目根目录访问。
+确认网络可以访问 `https://github.com/zhao004/dart_video_parse.git`，并检查 Git 凭据、代理或防火墙配置。
 
 ### 代码生成文件缺失或过期
 
@@ -235,3 +230,21 @@ dart run build_runner build --delete-conflicting-outputs
 ### 解析结果一直来自缓存
 
 解析结果缓存有效期默认为 6 小时，过期后会自动删除；设置页的“清空缓存”仅清理网络图片和视频临时文件，不会删除解析日志或解析结果缓存。
+
+## 免责声明
+
+- 本项目仅用于学习、研究和技术交流，不构成任何明示或暗示的承诺、保证或建议。
+- 本项目不托管或提供第三方媒体内容。解析结果、媒体链接和解析源由第三方服务返回，其合法性、准确性、可用性和安全性由相应服务及使用者自行判断。
+- 使用者应确保输入、解析、下载、保存和分享的内容符合适用法律法规、第三方服务条款及权利人的授权要求，不得将本项目用于侵犯版权、隐私或其他合法权益的行为。
+- 下载的媒体文件可能受临时链接、访问权限、地区限制或服务变更影响。使用者应自行承担网络流量、存储、权限申请、内容处理及使用行为产生的全部责任。
+- 因使用或无法使用本项目、第三方服务或第三方内容而产生的任何直接或间接损失，项目作者和贡献者不承担责任。
+- MIT 许可证仅授予本项目代码的使用权限，不授予第三方媒体内容、解析服务或其他外部资源的授权。
+
+## 许可证
+
+本项目基于 [MIT License](LICENSE) 开源。完整许可文本请参阅仓库根目录的 `LICENSE` 文件。
+
+## 相关链接
+
+- 社区：[Linux.do](https://linux.do/)
+- 更多开源项目：[zhao04 的公开主题](https://linux.do/u/zhao04/activity/topics)

@@ -31,7 +31,8 @@ dependencies:
   flutter:
     sdk: flutter
   dart_video_parse:
-    path: ../dart_video_parse
+    git:
+      url: https://github.com/zhao004/dart_video_parse.git
 
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
